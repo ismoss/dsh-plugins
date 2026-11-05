@@ -1,0 +1,45 @@
+{
+  "name": "dsh-offwork-countdown",
+  "version": "1.0.0",
+  "description": "在 DeepSeek Harness 输入框下方显示下班倒计时与可点归零的自定义计时器，另有可拖动的悬浮卡片；时间与显示项在插件页的配置卡片里调整。",
+  "author": "moss",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ismoss/dsh-plugins.git",
+    "directory": "plugins/dsh-offwork-countdown"
+  },
+  "scripts": {
+    "test": "node test/logic.mjs",
+    "check": "node --check client.js && node test/logic.mjs"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    }
+  }
+}
