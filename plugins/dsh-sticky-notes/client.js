@@ -579,7 +579,7 @@ window.__ModuleLoader__.load({
 .dsh-notes-dock:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:2px}
 .dsh-notes-quick{
   position:fixed;right:24px;bottom:132px;z-index:940;box-sizing:border-box;
-  width:min(420px,calc(100vw - 32px));max-height:min(480px,calc(100vh - 160px));
+  width:min(420px,calc(100vw - 32px));max-height:min(480px,calc(100vh - 220px));
   display:flex;flex-direction:column;
   border-radius:12px;border:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.24));
   background:var(--dsw-alias-bg-overlay,Canvas);
@@ -707,6 +707,16 @@ window.__ModuleLoader__.load({
   border:1px solid rgba(229,72,77,.38);font-size:12px;line-height:17px;color:#e5484d;
 }
 .dsh-notes-banner{display:flex;align-items:center;gap:8px;font-size:11px;line-height:16px;color:var(--dsw-alias-label-dimmed,rgba(127,127,127,.8))}
+.dsh-notes-info{
+  display:flex;flex-direction:column;gap:2px;
+  padding:7px 9px;border-radius:8px;
+  border:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.22));
+  background:var(--dsw-alias-bg-layer-1,rgba(127,127,127,.05));
+  color:var(--dsw-alias-label-secondary,rgba(90,93,99,.98));
+  font-size:12px;line-height:17px;
+}
+.dsh-notes-info-key{font-size:11px;line-height:15px;color:var(--dsw-alias-label-tertiary,rgba(120,123,129,.98))}
+.dsh-notes-info-value{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;line-height:16px;overflow-wrap:anywhere}
 
 .dsh-notes-config{margin:4px 0;padding:14px 16px;border-radius:12px;border:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.24));background:var(--dsw-alias-bg-layer-1,transparent)}
 .dsh-notes-config-head{display:flex;flex-direction:column;gap:3px;margin-bottom:10px}
@@ -1349,12 +1359,31 @@ window.__ModuleLoader__.load({
     }
 
     /** 插件页和便签页共用同一套设置；改一处，两边立刻同步（localStorage 单一真相）。 */
-    function SettingsPanel({ compact }) {
+    function SettingsPanel({ compact, onRequestClose }) {
       useLocaleWakeup();
       const prefs = usePrefs();
+      const rootRef = React.useRef(null);
+
+      React.useEffect(() => {
+        if (typeof onRequestClose !== "function") return undefined;
+        // 点面板以外的地方就收起（点「设置」按钮本身除外，否则会先收起再被按钮打开）。
+        const onPointerDown = (event) => {
+          const root = rootRef.current;
+          if (root === null) return;
+          const target = event.target;
+          if (target instanceof Element) {
+            if (root.contains(target)) return;
+            if (target.closest("[data-dsh-notes-settings-toggle]") !== null) return;
+          }
+          onRequestClose();
+        };
+        document.addEventListener("pointerdown", onPointerDown, true);
+        return () => document.removeEventListener("pointerdown", onPointerDown, true);
+      }, [onRequestClose]);
+
       return h(
         "div",
-        { className: compact ? "dsh-notes-settings is-compact" : "dsh-notes-settings" },
+        { className: compact ? "dsh-notes-settings is-compact" : "dsh-notes-settings", ref: rootRef },
         h("style", null, CSS),
         h(SwitchRow, {
           title: t("set.dock"),
@@ -1633,17 +1662,25 @@ window.__ModuleLoader__.load({
                   type: "button",
                   className: "dsh-notes-rail-item",
                   "data-on": showSettings ? "true" : "false",
+                  "data-dsh-notes-settings-toggle": "true",
+                  "aria-expanded": showSettings ? "true" : "false",
                   onClick: () => setShowSettings((value) => !value)
                 },
                 h("span", { className: "dsh-notes-rail-name" }, t("page.settings"))
               ),
-              showSettings ? h(SettingsPanel, { compact: true }) : null,
+              showSettings
+                ? h(SettingsPanel, {
+                    compact: true,
+                    onRequestClose: () => setShowSettings(false)
+                  })
+                : null,
               h(
                 "div",
-                { className: "dsh-notes-banner", style: { padding: "6px", overflowWrap: "anywhere" } },
-                `${t("page.dir")}：${store.dir}`
+                { className: "dsh-notes-info" },
+                h("span", { className: "dsh-notes-info-key" }, t("page.dir")),
+                h("span", { className: "dsh-notes-info-value" }, store.dir)
               ),
-              h("div", { className: "dsh-notes-banner", style: { padding: "6px" } }, t("page.toolsHint"))
+              h("div", { className: "dsh-notes-info", style: { marginTop: "4px" } }, t("page.toolsHint"))
             )
           ),
           h("div", { className: "dsh-notes-content" }, content)
