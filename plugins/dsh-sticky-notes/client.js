@@ -357,10 +357,12 @@ window.__ModuleLoader__.load({
       selected: "", // "" = 未选；"*" = 所有工作区
       group: null, // { workspace, title, notes: [] }
       all: {}, // workspace -> group（“所有工作区”视图）
-      error: null
+      error: null,
+      notesError: null
     };
     const listeners = new Set();
     const pendingGroups = new Map();
+    let groupsToken = 0;
 
     function publish(patch) {
       state = { ...state, ...patch };
@@ -410,9 +412,12 @@ window.__ModuleLoader__.load({
       if (running !== undefined) return running;
       const before = state.status;
       if (before !== "ready") publish({ status: "loading" });
+      const token = (groupsToken += 1);
       const job = (async () => {
         try {
           const data = await call("groups", { sessionId: wanted });
+          // 切会话后旧请求的慢回包不许再改 current/selected（否则会写进上一个工作区）。
+          if (token !== groupsToken) return;
           const groups = Array.isArray(data?.groups) ? data.groups : [];
           const resolved = typeof data?.current === "string" ? data.current : "";
           // 宿主没有会话可问（比如从侧栏直接打开便签页）时，用这个浏览器记住的最后一个工作区。
@@ -426,6 +431,10 @@ window.__ModuleLoader__.load({
           let selected = state.selected;
           if (selected === "" && current !== "") selected = current;
           if (selected === "" && groups.length > 0) selected = groups[0].workspace;
+          // 选中的工作区被删了 / 改名了：收回当前工作区或第一个分组。
+          if (selected !== "" && selected !== "*" && !groups.some((item) => item.workspace === selected)) {
+            selected = current !== "" ? current : groups.length > 0 ? groups[0].workspace : "";
+          }
           publish({
             status: "ready",
             dir: typeof data?.dir === "string" ? data.dir : "",
@@ -440,7 +449,8 @@ window.__ModuleLoader__.load({
           if (current !== "" && prefs.lastWorkspace !== current) writePrefs({ lastWorkspace: current });
           // 回灌照做：有未保存草稿的那张由 NoteCard 自己拦（转冲突提示），
           // 只是展开看、没动过字的卡片必须能跟着 AI 的写入刷新。
-          if (selected !== "" && selected !== "*") await loadNotes(selected);
+          if (selected === "*") await loadAll();
+          else if (selected !== "") await loadNotes(selected);
         } catch (error) {
           publish({ status: "error", error: toClientError(error) });
         } finally {
@@ -453,32 +463,56 @@ window.__ModuleLoader__.load({
 
     let notesToken = 0;
 
+    /** 把选中项切到某个工作区再取正文；"*" 视图里也能正确切走。 */
+    async function selectWorkspace(workspace) {
+      if (workspace === "" || workspace === "*") return null;
+      if (state.selected !== workspace) publish({ selected: workspace, notesError: null });
+      return loadNotes(workspace);
+    }
+
     async function loadNotes(workspace) {
       const token = (notesToken += 1);
       try {
-        const group = await call("notes", { workspace });
+        const raw = await call("notes", { workspace });
+        const group = { ...raw, notes: Array.isArray(raw?.notes) ? raw.notes : [] };
         // 只有最后一次请求的回包算数：快速点 A→B 时，A 的慢回包不能把界面拨回去。
         if (token !== notesToken) return group;
         if (state.selected === "*") {
-          publish({ all: { ...state.all, [workspace]: group } });
+          publish({ all: { ...state.all, [workspace]: group }, notesError: null });
         } else {
-          publish({ group, selected: workspace, error: null });
+          publish({ group, selected: workspace, error: null, notesError: null });
         }
         return group;
       } catch (error) {
-        if (token === notesToken) publish({ status: "error", error: toClientError(error) });
+        // 读某一份失败不该把整页（连同展开中的草稿）换掉，只提示这一块。
+        if (token === notesToken) publish({ notesError: toClientError(error) });
         return null;
       }
     }
 
+    let allToken = 0;
+
     async function loadAll() {
-      publish({ selected: "*", status: state.status === "ready" ? "ready" : "loading" });
-      const groups = state.groups;
-      for (const item of groups) {
-        // 每次进来都重取：AI 刚追加完，缓存里的旧正文会让人以为没写进去。
-        await loadNotes(item.workspace);
+      const token = (allToken += 1);
+      publish({ selected: "*", status: state.status === "ready" ? "ready" : "loading", notesError: null });
+      const groups = state.groups.slice();
+      const entries = await Promise.all(
+        groups.map(async (item) => {
+          try {
+            const raw = await call("notes", { workspace: item.workspace });
+            return [item.workspace, { ...raw, notes: Array.isArray(raw?.notes) ? raw.notes : [] }];
+          } catch {
+            return null;
+          }
+        })
+      );
+      if (token !== allToken) return;
+      // 按当前分组重建，别把已经删掉/改名的分区残留下来。
+      const next = {};
+      for (const entry of entries) {
+        if (entry !== null) next[entry[0]] = entry[1];
       }
-      publish({ status: "ready" });
+      publish({ all: next, status: "ready" });
     }
 
     async function saveNote(workspace, note) {
@@ -534,7 +568,7 @@ window.__ModuleLoader__.load({
       if (view === "all") {
         void loadAll();
       } else if (view === "current" && state.current !== "") {
-        void loadNotes(state.current);
+        void selectWorkspace(state.current);
       }
     }
 
@@ -837,7 +871,11 @@ window.__ModuleLoader__.load({
 
       React.useEffect(() => {
         if (!visible) return undefined;
-        if (sessionId !== "" && state.sessionId !== sessionId) publish({ sessionId });
+        if (sessionId !== "" && state.sessionId !== sessionId) {
+          // 换会话先把「当前工作区」清掉：新会话的工作区还没解析出来之前，
+          // 不能留着上一个会话的，否则快捷新建会写进别的工作区。
+          publish({ sessionId, current: "", currentLive: false, currentTitle: "" });
+        }
         void refreshGroups(sessionId);
         const onFocus = () => void refreshGroups(sessionId);
         window.addEventListener("focus", onFocus);
@@ -893,6 +931,7 @@ window.__ModuleLoader__.load({
       // Ctrl+Enter 在 effect 里绑一次，闭包会停在「刚打开、还没输入」那一刻的 submit；
       // 用 ref 指向最新那份，快捷键才不会拿到空的 title/body。
       const submitRef = React.useRef(null);
+      const cardRef = React.useRef(null);
 
       // 拿不到会话工作区时不要拿「上次记住的工作区」兜底写——那会写进别的工作区。
       const workspace = store.currentLive === true ? store.current : "";
@@ -906,6 +945,9 @@ window.__ModuleLoader__.load({
         setError("");
         const timer = window.setTimeout(() => bodyRef.current?.focus?.(), 30);
         const onKey = (event) => {
+          // 焦点不在卡片里就别管：不然在聊天输入框按 Esc / Ctrl+Enter 会被吞掉。
+          const card = cardRef.current;
+          if (card !== null && event.target instanceof Node && !card.contains(event.target)) return;
           if (event.key === "Escape") {
             event.stopPropagation();
             setQuickOpen(false);
@@ -948,7 +990,7 @@ window.__ModuleLoader__.load({
       if (workspace === "") {
         return h(
           "div",
-          { className: "dsh-notes-quick", role: "dialog", "aria-label": t("quick.title") },
+          { className: "dsh-notes-quick", role: "dialog", "aria-label": t("quick.title"), ref: cardRef },
           h("style", null, CSS),
           h(
             "div",
@@ -974,7 +1016,7 @@ window.__ModuleLoader__.load({
 
       return h(
         "div",
-        { className: "dsh-notes-quick", role: "dialog", "aria-label": t("quick.title") },
+        { className: "dsh-notes-quick", role: "dialog", "aria-label": t("quick.title"), ref: cardRef },
         h("style", null, CSS),
         h(
           "div",
@@ -1042,9 +1084,12 @@ window.__ModuleLoader__.load({
       );
     }
 
+    // 收起卡片不丢草稿：按「工作区#编号」暂存，重开时优先恢复；保存/覆盖/载入最新后清掉。
+    const draftCache = new Map();
+
     function NoteCard({ note, workspace, open, onToggle }) {
-      const [draftTitle, setDraftTitle] = React.useState(note.title);
-      const [draftBody, setDraftBody] = React.useState(note.body);
+      const [draftTitle, setDraftTitle] = React.useState(String(note.title ?? ""));
+      const [draftBody, setDraftBody] = React.useState(String(note.body ?? ""));
       const [status, setStatus] = React.useState("idle");
       const [error, setError] = React.useState("");
       const [confirmDelete, setConfirmDelete] = React.useState(false);
@@ -1061,6 +1106,23 @@ window.__ModuleLoader__.load({
           loadedRef.current = { no: 0, rev: -1 };
           return;
         }
+        // 上次收起时留着的草稿：恢复它；如果这期间便签在别处被改过，直接进冲突态。
+        const cached = draftCache.get(`${workspace}#${note.no}`);
+        if (cached !== undefined) {
+          loadedRef.current = { no: note.no, rev: cached.rev };
+          setDraftTitle(cached.title);
+          setDraftBody(cached.body);
+          setStatus("idle");
+          setConfirmDelete(false);
+          if (cached.rev !== note.rev) {
+            setConflict(true);
+            setError(t("page.conflict"));
+          } else {
+            setConflict(false);
+            setError("");
+          }
+          return;
+        }
         const dirtyNow = draftTitle !== note.title || draftBody !== note.body;
         const sameNote = loadedRef.current.no === note.no;
         if (sameNote && loadedRef.current.rev !== note.rev && dirtyNow) {
@@ -1069,9 +1131,10 @@ window.__ModuleLoader__.load({
           return;
         }
         loadedRef.current = { no: note.no, rev: note.rev };
-        setDraftTitle(note.title);
-        setDraftBody(note.body);
-        setStatus("idle");
+        setDraftTitle(String(note.title ?? ""));
+        setDraftBody(String(note.body ?? ""));
+        // 刚保存完那一瞬间别把「已保存」抹掉。
+        setStatus((previous) => (previous === "saved" ? previous : "idle"));
         setError("");
         setConfirmDelete(false);
         setConflict(false);
@@ -1093,7 +1156,16 @@ window.__ModuleLoader__.load({
           const payload = { no: note.no, title: draftTitle, body: draftBody };
           // 冲突后这一次就是「以我为准」：不再带 baseRev，否则永远存不进去。
           if (!conflict) payload.baseRev = note.rev;
-          await saveNote(workspace, payload);
+          const group = await saveNote(workspace, payload);
+          // 宿主会规范化正文（去尾空白）、截断标题、空标题不覆盖。以它回包的内容为准，
+          // 否则草稿和 note 永远不相等，保存完立刻误报冲突、而且永远好不了。
+          const saved = Array.isArray(group?.notes) ? group.notes.find((item) => item.no === note.no) : undefined;
+          if (saved !== undefined) {
+            loadedRef.current = { no: saved.no, rev: saved.rev };
+            setDraftTitle(String(saved.title ?? ""));
+            setDraftBody(String(saved.body ?? ""));
+            draftCache.delete(`${workspace}#${note.no}`);
+          }
           setStatus("saved");
           setConflict(false);
         } catch (failure) {
@@ -1108,6 +1180,10 @@ window.__ModuleLoader__.load({
       }
 
       async function reloadFromHost() {
+        // 让 effect 认为这是一张刚载入的便签：不这么干的话，脏草稿会把这次回灌短路掉，
+        // 「载入最新」等于没载入，紧接着的保存还会把别人刚追加的内容盖回去。
+        loadedRef.current = { no: 0, rev: -1 };
+        draftCache.delete(`${workspace}#${note.no}`);
         setConflict(false);
         setError("");
         await loadNotes(workspace);
@@ -1157,12 +1233,12 @@ window.__ModuleLoader__.load({
             "span",
             { className: "dsh-notes-card-text" },
             h("span", { className: "dsh-notes-card-title" }, note.title === "" ? t("page.untitled") : note.title),
-            note.body === "" ? null : h("span", { className: "dsh-notes-card-preview" }, previewOf(note.body, 180))
+            String(note.body ?? "") === "" ? null : h("span", { className: "dsh-notes-card-preview" }, previewOf(note.body, 180))
           ),
           h(
             "span",
             { className: "dsh-notes-card-meta" },
-            note.body.length > 0 ? `${note.body.length} 字` : "",
+            String(note.body ?? "").length > 0 ? `${String(note.body).length} 字` : "",
             note.updatedAt === "" ? "" : ` · ${timeAgo(note.updatedAt)}`
           )
         ),
@@ -1174,7 +1250,12 @@ window.__ModuleLoader__.load({
                 className: "dsh-notes-input",
                 value: draftTitle,
                 placeholder: t("page.titlePlaceholder"),
-                onChange: (event) => setDraftTitle(event.target.value),
+                onChange: (event) => {
+                  const next = event.target.value;
+                  setDraftTitle(next);
+                  if (next === note.title && draftBody === note.body) draftCache.delete(`${workspace}#${note.no}`);
+                  else draftCache.set(`${workspace}#${note.no}`, { title: next, body: draftBody, rev: loadedRef.current.rev });
+                },
                 onKeyDown: onKey
               }),
               h("textarea", {
@@ -1182,7 +1263,12 @@ window.__ModuleLoader__.load({
                 value: draftBody,
                 style: { minHeight: "180px" },
                 placeholder: t("page.bodyPlaceholder"),
-                onChange: (event) => setDraftBody(event.target.value),
+                onChange: (event) => {
+                  const next = event.target.value;
+                  setDraftBody(next);
+                  if (draftTitle === note.title && next === note.body) draftCache.delete(`${workspace}#${note.no}`);
+                  else draftCache.set(`${workspace}#${note.no}`, { title: draftTitle, body: next, rev: loadedRef.current.rev });
+                },
                 onKeyDown: onKey
               }),
               h(
@@ -1373,9 +1459,11 @@ window.__ModuleLoader__.load({
       useLocaleWakeup();
       const prefs = usePrefs();
       const rootRef = React.useRef(null);
+      const closeRef = React.useRef(onRequestClose);
+      closeRef.current = onRequestClose;
 
       React.useEffect(() => {
-        if (typeof onRequestClose !== "function") return undefined;
+        if (typeof closeRef.current !== "function") return undefined;
         // 点面板以外的地方就收起（点「设置」按钮本身除外，否则会先收起再被按钮打开）。
         const onPointerDown = (event) => {
           const root = rootRef.current;
@@ -1385,11 +1473,11 @@ window.__ModuleLoader__.load({
             if (root.contains(target)) return;
             if (target.closest("[data-dsh-notes-settings-toggle]") !== null) return;
           }
-          onRequestClose();
+          closeRef.current?.();
         };
         document.addEventListener("pointerdown", onPointerDown, true);
         return () => document.removeEventListener("pointerdown", onPointerDown, true);
-      }, [onRequestClose]);
+      }, []);
 
       return h(
         "div",
@@ -1441,7 +1529,7 @@ window.__ModuleLoader__.load({
       useLocaleWakeup();
       const store = useStore();
       const currentPrefs = usePrefs();
-      const [openNo, setOpenNo] = React.useState(0);
+      const [openKey, setOpenKey] = React.useState("");
       const [composing, setComposing] = React.useState(false);
       const [showSettings, setShowSettings] = React.useState(false);
 
@@ -1461,7 +1549,9 @@ window.__ModuleLoader__.load({
         };
         const timer = window.setInterval(() => {
           if (!visible()) return;
-          if (state.selected !== "" && state.selected !== "*") {
+          if (state.selected === "*") {
+            void loadAll();
+          } else if (state.selected !== "") {
             void call("notes", { workspace: state.selected }).then((group) => upsertGroup(group)).catch(() => undefined);
           }
         }, 10000);
@@ -1474,13 +1564,13 @@ window.__ModuleLoader__.load({
       const currentGroup = store.current !== "" ? store.groups.find((item) => item.workspace === store.current) : undefined;
 
       const choose = (workspace) => {
-        setOpenNo(0);
+        setOpenKey("");
         setComposing(false);
         if (workspace === "*") {
           void loadAll();
           return;
         }
-        void loadNotes(workspace);
+        void selectWorkspace(workspace);
       };
 
       const onSaved = () => {
@@ -1493,8 +1583,11 @@ window.__ModuleLoader__.load({
             key: `${target.workspace}#${note.no}`,
             note,
             workspace: target.workspace,
-            open: openNo === note.no,
-            onToggle: (no) => setOpenNo((current) => (current === no ? 0 : no))
+            open: openKey === `${target.workspace}#${note.no}`,
+            onToggle: (no) => {
+              const key = `${target.workspace}#${no}`;
+              setOpenKey((current) => (current === key ? "" : key));
+            }
           })
         );
 
@@ -1565,10 +1658,25 @@ window.__ModuleLoader__.load({
         ];
       })();
 
+      const notesErrorBanner =
+        store.notesError === null || store.notesError === undefined
+          ? null
+          : h(
+              "div",
+              { className: "dsh-notes-error", style: { margin: "10px 20px 0" } },
+              h("span", null, `${t("page.failed")}：${store.notesError.message ?? ""}`),
+              h(
+                "button",
+                { type: "button", className: "dsh-notes-btn", "data-kind": "ghost", onClick: () => void refreshGroups("") },
+                t("page.retry")
+              )
+            );
+
       return h(
         "div",
         { className: "dsh-notes-page" },
         h("style", null, CSS),
+        notesErrorBanner,
         h(
           "div",
           { className: "dsh-notes-page-head" },
@@ -1585,11 +1693,11 @@ window.__ModuleLoader__.load({
               className: "dsh-notes-btn",
               onClick: () => {
                 if (selected === "*" && store.current !== "") {
-                  void loadNotes(store.current).then(() => setComposing(true));
+                  void selectWorkspace(store.current).then(() => setComposing(true));
                 } else {
                   setComposing(true);
                 }
-                setOpenNo(0);
+                setOpenKey("");
               }
             },
             h("span", { style: { display: "inline-flex", alignItems: "center", gap: "5px" } }, h(PlusIcon, { size: 12 }), t("page.new"))
