@@ -246,9 +246,19 @@ window.__ModuleLoader__.load({
       return null;
     }
 
+    /** 统一成补零的 `HH:MM` —— `<input type="time">` 只认这个格式，不补零会显示成空白。 */
+    function padClock(value) {
+      const parsed = parseClock(value);
+      if (parsed === undefined) return undefined;
+      return `${String(parsed.hours).padStart(2, "0")}:${String(parsed.minutes).padStart(2, "0")}`;
+    }
+
     function normalize(raw) {
       const source = raw !== null && typeof raw === "object" ? raw : {};
-      const clock = (value, fallback) => (parseClock(value) === undefined ? fallback : value);
+      const clock = (value, fallback) => {
+        const padded = padClock(value);
+        return padded === undefined ? fallback : padded;
+      };
       return {
         start: clock(source.start, DEFAULTS.start),
         end: clock(source.end, DEFAULTS.end),
@@ -609,6 +619,8 @@ window.__ModuleLoader__.load({
   user-select:none;
 }
 .dsh-offwork-dock-value{font-variant-numeric:tabular-nums;letter-spacing:.02em}
+/* 按钮外面套一层：<style> 不能放进 <button>（button 只允许短语内容）。 */
+.dsh-offwork-timer-wrap{display:inline-flex;align-items:center;min-width:0}
 .dsh-offwork-timer{
   appearance:none;display:inline-flex;align-items:center;gap:6px;min-width:0;
   padding:0;border:0;border-radius:6px;background:transparent;
@@ -852,16 +864,24 @@ window.__ModuleLoader__.load({
       if (elapsed === null) return null;
 
       return h(
-        "button",
-        {
-          type: "button",
-          className: "dsh-offwork-timer",
-          title: translate("timer.tip"),
-          onClick: () => writeSettings({ lastDrink: Date.now() })
-        },
+        "span",
+        { className: "dsh-offwork-timer-wrap" },
         h(Styles, { key: "css" }),
-        h("span", { key: "label" }, timerLabelOf(settings)),
-        h("span", { className: "dsh-offwork-timer-value", key: "value" }, formatDuration(elapsed, settings.timerSeconds))
+        h(
+          "button",
+          {
+            type: "button",
+            className: "dsh-offwork-timer",
+            title: translate("timer.tip"),
+            onClick: () => writeSettings({ lastDrink: Date.now() })
+          },
+          h("span", { key: "label" }, timerLabelOf(settings)),
+          h(
+            "span",
+            { className: "dsh-offwork-timer-value", key: "value" },
+            formatDuration(elapsed, settings.timerSeconds)
+          )
+        )
       );
     }
 
@@ -876,6 +896,8 @@ window.__ModuleLoader__.load({
       const width = floatWidth(settings);
       const cardRef = React.useRef(null);
       const drag = React.useRef(null);
+      /** 最近一次拖动的结束时刻：拖来拖去时浏览器也会给两次 click，别让「双击关闭」误伤。 */
+      const lastDragAt = React.useRef(0);
       const [cardHeight, setCardHeight] = React.useState(0);
       const [dragPos, setDragPos] = React.useState(null);
       const [, bump] = React.useState(0);
@@ -941,6 +963,7 @@ window.__ModuleLoader__.load({
           width
         );
         setDragPos(null);
+        lastDragAt.current = Date.now();
         // 只把「贴边 + 距离」写进设置，拖动过程中不碰 localStorage。
         writeSettings({ pos: anchorFromPoint(point, width, cardHeight) });
       };
@@ -973,6 +996,8 @@ window.__ModuleLoader__.load({
           onPointerCancel,
           onDoubleClick: () => {
             if (settings.dblclick !== true) return;
+            // 刚拖过就不算双击：拖动本身也会产生 click，松手两次很容易误关。
+            if (Date.now() - lastDragAt.current < 600) return;
             writeSettings({ float: false });
           }
         },

@@ -173,6 +173,12 @@ check("旧版整句去掉前缀", normalize({ timerLabel: "距上次上厕所" }
 check("普通词原样保留", normalize({ timerLabel: "上厕所" }).timerLabel, "上厕所");
 
 // ── 设置归一化（v1/v2 老数据要能升级）────────────────────────────────
+// ── 时间字符串统一补零（<input type="time"> 只认 HH:MM）────────────────
+check("9:05 补成 09:05", normalize({ start: "9:05" }).start, "09:05");
+check("8:30 补成 08:30", normalize({ end: "8:30" }).end, "08:30");
+check("24:00 退回默认", normalize({ end: "24:00" }).end, "18:00");
+check("脏值退回默认", normalize({ start: "abc" }).start, "09:00");
+
 const legacy = normalize({ start: "08:30", end: "17:30" });
 check("老数据保留上班时间", legacy.start, "08:30");
 check("老数据补出午休默认开", legacy.lunch, true);
