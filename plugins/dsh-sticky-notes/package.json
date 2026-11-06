@@ -1,7 +1,7 @@
 {
   "name": "dsh-sticky-notes",
-  "version": "1.0.0",
-  "description": "DeepSeek Harness 便签插件：便签正文落到宿主机的 notes.md（纯 Markdown），换浏览器、重启都在，AI 也能直接读写；输入框旁开关，页面上是可拖动的便签板。",
+  "version": "2.1.0",
+  "description": "DeepSeek Harness 便签：按 DSH 工作区分区、按编号交给 AI；用量栏一下就是新建输入框，侧栏「自动化任务」下面有独立便签页，AI 用 sticky_notes 工具按编号增删改查。",
   "author": "moss",
   "license": "MIT",
   "private": true,
@@ -25,11 +25,12 @@
     "index.js",
     "notes.js",
     "store.js",
+    "workspace.js",
     "client.js",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",
-    "README.md"
+    "DEVELOPING.md"
   ],
   "dsh": {
     "bundle": {
