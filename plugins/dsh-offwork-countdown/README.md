@@ -14,6 +14,14 @@
 | `shell.overlay` | 悬浮卡片 | 大号 `HH:MM:SS` + 进度条 + 页脚（下班时间 / 百分比）；可拖、可双击关、上/下两档 |
 | `plugins.bundle.config` | 插件页里的配置卡片 | 插件页简介下方、组件列表上方，可折叠 |
 
+三个位置各有**独立的开关**，也各自能**关掉秒**：
+
+| 位置 | 开关名 | 关掉「显示秒」后 |
+|---|---|---|
+| 悬浮卡片 | 悬浮窗 | `01:27` |
+| 用量栏·倒计时 | 用量栏 | `距下班 01:27` |
+| 用量栏·计时器 | 计时器 | `距上次喝水 01:27` |
+
 ## 设置在哪
 
 **只有一处**：`设置 → 插件 → 下班倒计时`，简介下面那张卡片。
@@ -25,7 +33,9 @@ Host 半不持有状态：
 
 ```js
 { start, end, lunch, lunchStart, lunchEnd, morningLunch,
-  timer, timerLabel, floatSide, dock, float, dblclick, lastDrink, pos }
+  timer, timerLabel,
+  dock, dockSeconds, timerSeconds, floatSeconds,
+  float, floatSide, dblclick, lastDrink, pos }
 ```
 
 `normalize()` 逐字段兜底，所以老版本数据（只有 `start`/`end`，或开关还叫 `water`）

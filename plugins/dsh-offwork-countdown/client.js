@@ -40,8 +40,11 @@ window.__ModuleLoader__.load({
       morningLunch: false,
       timer: true,
       timerLabel: "",
-      floatSide: "top",
       dock: true,
+      dockSeconds: true,
+      timerSeconds: true,
+      floatSeconds: true,
+      floatSide: "top",
       float: true,
       dblclick: true,
       lastDrink: null,
@@ -85,9 +88,10 @@ window.__ModuleLoader__.load({
       "group.time": "时间",
       "group.lunch": "午休",
       "group.morning": "上午",
+      "group.dock": "用量栏",
       "group.timer": "计时器",
-      "group.display": "显示",
       "group.float": "悬浮窗",
+      "group.other": "其他",
       "panel.title": "下班倒计时",
       "panel.desc": "时间、午休、计时器文案，以及各处的显示开关 —— 改完立刻生效。",
       "settings.timeTitle": "上下班时间",
@@ -105,6 +109,8 @@ window.__ModuleLoader__.load({
       "settings.morningLunchDesc": "打开时上午显示「距午饭」，关闭时全天显示「距下班」。",
       "settings.dock": "用量栏",
       "settings.dockDesc": "在输入框下方的用量栏里显示「距下班」一行。",
+      "settings.seconds": "显示秒",
+      "settings.secondsDesc": "关掉后只显示到分钟（01:27），不再每秒跳动。",
       "settings.timer": "计时器",
       "settings.timerDesc": "在用量栏显示一条可以点一下归零的计时；每天从上班时间重新起算，隔夜不累加。",
       "settings.timerLabel": "文案",
@@ -153,9 +159,10 @@ window.__ModuleLoader__.load({
       "group.time": "Time",
       "group.lunch": "Lunch break",
       "group.morning": "Morning",
+      "group.dock": "Dock",
       "group.timer": "Timer",
-      "group.display": "Display",
       "group.float": "Floating card",
+      "group.other": "Other",
       "panel.title": "Off-work countdown",
       "panel.desc": "Hours, lunch break, timer label and what is shown where — changes apply immediately.",
       "settings.timeTitle": "Work hours",
@@ -173,6 +180,8 @@ window.__ModuleLoader__.load({
       "settings.morningLunchDesc": "On: the morning shows the time until lunch. Off: it always shows the time until off work.",
       "settings.dock": "Dock line",
       "settings.dockDesc": "Show the countdown line in the composer dock below the input.",
+      "settings.seconds": "Show seconds",
+      "settings.secondsDesc": "Off: values stop at minutes (01:27) and no longer tick every second.",
       "settings.timer": "Timer",
       "settings.timerDesc": "A timer in the dock that resets when clicked; it starts again at work start each day and never carries over overnight.",
       "settings.timerLabel": "Label",
@@ -236,6 +245,9 @@ window.__ModuleLoader__.load({
           return label.trim().slice(0, 24);
         })(),
         dock: source.dock !== false,
+        dockSeconds: source.dockSeconds !== false,
+        timerSeconds: source.timerSeconds !== false,
+        floatSeconds: source.floatSeconds !== false,
         float: source.float !== false,
         dblclick: source.dblclick !== false,
         floatSide: source.floatSide === "bottom" ? "bottom" : "top",
@@ -426,14 +438,16 @@ window.__ModuleLoader__.load({
       };
     }
 
-    /** 毫秒 → HH:MM:SS（小时不封顶，负数按 0 处理）。 */
-    function formatDuration(ms) {
+    /** 毫秒 → HH:MM:SS；`withSeconds` 为 false 时只到 HH:MM（小时不封顶，负数按 0）。 */
+    function formatDuration(ms, withSeconds) {
       const total = Math.max(0, Math.floor(ms / 1000));
       const hours = Math.floor(total / 3600);
       const minutes = Math.floor((total % 3600) / 60);
       const seconds = total % 60;
       const pad = (value) => String(value).padStart(2, "0");
-      return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
+      return withSeconds === false
+        ? `${pad(hours)}:${pad(minutes)}`
+        : `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
     }
 
     function percentOf(view) {
@@ -760,7 +774,7 @@ window.__ModuleLoader__.load({
         h("span", { key: "label" }, labelOf(view, "dock")),
         view.kind === "rest"
           ? null
-          : h("span", { className: "dsh-offwork-dock-value", key: "value" }, formatDuration(view.msLeft))
+          : h("span", { className: "dsh-offwork-dock-value", key: "value" }, formatDuration(view.msLeft, settings.dockSeconds))
       );
     }
 
@@ -787,7 +801,7 @@ window.__ModuleLoader__.load({
         },
         h(Styles, { key: "css" }),
         h("span", { key: "label" }, timerLabelOf(settings)),
-        h("span", { className: "dsh-offwork-timer-value", key: "value" }, formatDuration(elapsed))
+        h("span", { className: "dsh-offwork-timer-value", key: "value" }, formatDuration(elapsed, settings.timerSeconds))
       );
     }
 
@@ -902,7 +916,7 @@ window.__ModuleLoader__.load({
         h(
           "div",
           { className: "dsh-offwork-float-time", key: "time" },
-          view.kind === "rest" ? "--:--:--" : formatDuration(view.msLeft)
+          view.kind === "rest" ? "--:--:--" : formatDuration(view.msLeft, settings.floatSeconds)
         ),
         h(
           "div",
@@ -1057,12 +1071,41 @@ window.__ModuleLoader__.load({
           )
         ]),
 
+        group("dock-group", "group.dock", [
+          row(
+            "dock-switch",
+            "settings.dock",
+            "settings.dockDesc",
+            h("div", { className: "dsh-offwork-row-controls" }, toggle("dock", "settings.dock", "settings.dockDesc"))
+          ),
+          row(
+            "dock-seconds",
+            "settings.seconds",
+            "settings.secondsDesc",
+            h(
+              "div",
+              { className: "dsh-offwork-row-controls" },
+              toggle("dockSeconds", "settings.seconds", "settings.secondsDesc")
+            )
+          )
+        ]),
+
         group("timer-group", "group.timer", [
           row(
             "timer-switch",
             "settings.timer",
             "settings.timerDesc",
             h("div", { className: "dsh-offwork-row-controls" }, toggle("timer", "settings.timer", "settings.timerDesc"))
+          ),
+          row(
+            "timer-seconds",
+            "settings.seconds",
+            "settings.secondsDesc",
+            h(
+              "div",
+              { className: "dsh-offwork-row-controls" },
+              toggle("timerSeconds", "settings.seconds", "settings.secondsDesc")
+            )
           ),
           row(
             "timer-label",
@@ -1108,22 +1151,23 @@ window.__ModuleLoader__.load({
           )
         ]),
 
-        group("display", "group.display", [
-          row(
-            "dock-switch",
-            "settings.dock",
-            "settings.dockDesc",
-            h("div", { className: "dsh-offwork-row-controls" }, toggle("dock", "settings.dock", "settings.dockDesc"))
-          ),
+        group("float", "group.float", [
           row(
             "float-switch",
             "settings.float",
             "settings.floatDesc",
             h("div", { className: "dsh-offwork-row-controls" }, toggle("float", "settings.float", "settings.floatDesc"))
-          )
-        ]),
-
-        group("float", "group.float", [
+          ),
+          row(
+            "float-seconds",
+            "settings.seconds",
+            "settings.secondsDesc",
+            h(
+              "div",
+              { className: "dsh-offwork-row-controls" },
+              toggle("floatSeconds", "settings.seconds", "settings.secondsDesc")
+            )
+          ),
           row(
             "float-side",
             "settings.floatSide",
@@ -1146,7 +1190,10 @@ window.__ModuleLoader__.load({
               { className: "dsh-offwork-row-controls" },
               toggle("dblclick", "settings.dblclick", "settings.dblclickDesc")
             )
-          ),
+          )
+        ]),
+
+        group("other", "group.other", [
           row(
             "reset",
             "settings.resetTitle",

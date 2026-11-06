@@ -66,6 +66,8 @@ check("parseClock 空串非法", parseClock(""), undefined);
 check("formatDuration 27m7s", formatDuration(27 * MIN + 7000), "00:27:07");
 check("formatDuration 负数按 0", formatDuration(-5000), "00:00:00");
 check("formatDuration 跨 100 小时", formatDuration(100 * 3600 * 1000), "100:00:00");
+check("formatDuration 关掉秒", formatDuration(27 * MIN + 7000, false), "00:27");
+check("formatDuration 关掉秒仍不丢小时", formatDuration(5 * 3600 * 1000 + 59 * MIN, false), "05:59");
 
 // ── 工作日各时段 ──────────────────────────────────────────────────────
 const workday = (h, m, s = 0) => new Date(2026, 10, 5, h, m, s); // 2026-11-05 周四
@@ -175,6 +177,7 @@ check("老数据补出「上午显示下班」", legacy.morningLunch, false);
 check("老数据补出计时器默认开", legacy.timer, true);
 check("老数据补出计时器文案为空", legacy.timerLabel, "");
 check("老数据补出用量栏默认开", legacy.dock, true);
+check("老数据补出三处「显示秒」默认开", `${legacy.dockSeconds}/${legacy.timerSeconds}/${legacy.floatSeconds}`, "true/true/true");
 check("老数据补出悬浮窗默认开", legacy.float, true);
 check("老数据补出双击关闭默认开", legacy.dblclick, true);
 check("老数据补出位置上", legacy.floatSide, "top");
