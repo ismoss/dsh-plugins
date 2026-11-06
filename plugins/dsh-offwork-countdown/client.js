@@ -55,6 +55,11 @@ window.__ModuleLoader__.load({
     /** 关掉秒之后的宽度（数字从 8 个字符变成 5 个）。 */
     const CARD_WIDTH_COMPACT = 190;
     const DRAG_THRESHOLD = 4;
+    /**
+     * 窗口右上那组最小化 / 最大化 / 关闭按钮是画在页面内容之上的（桌面端无边框窗口）。
+     * 浮窗最小 y 要留出这一条，否则会被盖住；拖动与恢复旧位置时都按它夹。
+     */
+    const TOP_SAFE = 52;
 
     /* ------------------------------------------------------------------ *
      * 文案：内置中英两份；locale 服务可用时注册进它的命名空间，
@@ -518,10 +523,11 @@ window.__ModuleLoader__.load({
     function clampPos(pos, width) {
       const cardWidth = width > 0 ? width : CARD_WIDTH;
       const maxX = Math.max(8, window.innerWidth - cardWidth - 8);
-      const maxY = Math.max(8, window.innerHeight - 72);
+      // 竖直方向：顶部让开窗口按钮那一栏，底部也留出条儿；窗口特别矮时以顶部为准。
+      const maxY = Math.max(TOP_SAFE, window.innerHeight - 72);
       return {
         x: Math.min(Math.max(8, pos.x), maxX),
-        y: Math.min(Math.max(8, pos.y), maxY)
+        y: Math.min(Math.max(TOP_SAFE, pos.y), maxY)
       };
     }
 
