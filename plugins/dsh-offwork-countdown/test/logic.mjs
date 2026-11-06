@@ -97,8 +97,8 @@ near("18:00 已下班 0", after.msLeft, 0, 10);
 near("18:30 已下班 30 分钟", viewAt(workday(18, 30, 0), settings).msLeft, 30 * MIN, 10);
 
 // ── 周末 ─────────────────────────────────────────────────────────────
-check("周六 2026-11-07 休息", viewAt(new Date(2026, 10, 7, 10, 0), settings).kind, "rest");
-check("周日 2026-11-08 休息", viewAt(new Date(2026, 10, 8, 10, 0), settings).kind, "rest");
+check("周六也照常跑（大小周）", viewAt(new Date(2026, 10, 7, 10, 0), settings).kind, "working");
+check("周日也照常跑", viewAt(new Date(2026, 10, 8, 21, 0), settings).kind, "after");
 
 // ── 跨夜班次：22:00 → 次日 06:00 ──────────────────────────────────────
 const night = { start: "22:00", end: "06:00" };
@@ -155,7 +155,12 @@ near(
   3600 * 1000,
   1000
 );
-check("周六不显示", timerElapsed(new Date(2026, 10, 7, 10, 0), { ...settings, lastDrink: null }), null);
+near(
+  "周末照常计时（10:00 从上班算 1 小时）",
+  timerElapsed(new Date(2026, 10, 7, 10, 0), { ...settings, lastDrink: null }),
+  3600 * 1000,
+  1000
+);
 near(
   "夜班 02:00 从昨晚 22:00 起算",
   timerElapsed(workday(2, 0), { start: "22:00", end: "06:00", lastDrink: null }),

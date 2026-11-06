@@ -16,7 +16,8 @@
  * 为什么状态在页面侧而不是 Host 的 Config：倒计时只依赖浏览器自己的钟和这几个
  * 偏好值，Host 半拿它没有用途；放在页面里改完即生效，不需要重载 DSH。
  *
- * 时间规则（`viewAt`）：周一到周五才算工作日；下班时间 ≤ 上班时间视为跨夜班次
+ * 时间规则（`viewAt`）：**不区分工作日和周末** —— 公司电脑，大小周，天天按这套时间跑；
+ * 下班时间 ≤ 上班时间视为跨夜班次
  * （下班落在次日，这种班次不拆午休）；午休时段倒计时改数「距午休结束」，
  * 进度条在这个区间原地不动，因为午休不算工时。
  */
@@ -71,7 +72,6 @@ window.__ModuleLoader__.load({
       "dock.toLunch": "距午饭",
       "dock.lunch": "午休",
       "dock.offWork": "已下班",
-      "dock.rest": "今天休息",
       "dock.tipPrefix": "工作时间",
       "dock.timerPrefix": "距上次",
       "dock.timerDefault": "喝水",
@@ -85,8 +85,6 @@ window.__ModuleLoader__.load({
       "float.toLunch": "距离午饭",
       "float.lunch": "午休中",
       "float.offWork": "已经下班",
-      "float.rest": "今天休息",
-      "float.restFooter": "工作日 周一至周五",
       "float.footerStart": "上班时间",
       "float.footerEnd": "下班时间",
       "float.footerLunch": "午饭时间",
@@ -140,7 +138,6 @@ window.__ModuleLoader__.load({
       "dock.toLunch": "Lunch in",
       "dock.lunch": "Lunch break",
       "dock.offWork": "Off work",
-      "dock.rest": "Day off",
       "dock.tipPrefix": "Work hours",
       "dock.timerPrefix": "Since last ",
       "dock.timerDefault": "drink",
@@ -154,8 +151,6 @@ window.__ModuleLoader__.load({
       "float.toLunch": "Until lunch",
       "float.lunch": "On lunch break",
       "float.offWork": "Off work",
-      "float.rest": "Day off",
-      "float.restFooter": "Workdays, Monday to Friday",
       "float.footerStart": "Work starts at",
       "float.footerEnd": "Off work at",
       "float.footerLunch": "Lunch at",
@@ -406,16 +401,12 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * @returns {{kind: "rest"} |
-     *           {kind: "before", target: "start", msLeft: number, progress: number} |
+     * @returns {{kind: "before", target: "start", msLeft: number, progress: number} |
      *           {kind: "working", target: "lunchStart" | "end", msLeft: number, progress: number} |
      *           {kind: "lunch", target: "lunchEnd", msLeft: number, progress: number} |
      *           {kind: "after", target: "end", msLeft: number, progress: number}}
      */
     function viewAt(date, settings) {
-      const day = date.getDay();
-      if (day === 0 || day === 6) return { kind: "rest" };
-
       const schedule = scheduleOf(settings);
       const nowMin =
         date.getHours() * 60 +
@@ -483,13 +474,11 @@ window.__ModuleLoader__.load({
     }
 
     function percentOf(view) {
-      if (view.kind === "rest") return 0;
       return Math.round(clamp01(view.progress) * 100);
     }
 
     /** 座位前缀不同、状态词表相同：dock 用短词，float 用完整句。 */
     function labelOf(view, prefix) {
-      if (view.kind === "rest") return translate(`${prefix}.rest`);
       if (view.kind === "after") return translate(`${prefix}.offWork`);
       if (view.kind === "before") return translate(`${prefix}.toStart`);
       if (view.kind === "lunch") return translate(`${prefix}.lunch`);
@@ -509,9 +498,7 @@ window.__ModuleLoader__.load({
 
     /** 悬浮窗页脚左侧：当前数的那个时间点。 */
     function footerOf(view, settings) {
-      switch (view.kind === "rest" ? "rest" : view.target) {
-        case "rest":
-          return translate("float.restFooter");
+      switch (view.target) {
         case "start":
           return `${translate("float.footerStart")} ${settings.start}`;
         case "lunchStart":
@@ -530,9 +517,6 @@ window.__ModuleLoader__.load({
      * 点过，第二天上班都从上班那一刻重新算，绝不会一开页面就显示十几个小时。
      */
     function timerElapsed(date, settings) {
-      const day = date.getDay();
-      if (day === 0 || day === 6) return null;
-
       const schedule = scheduleOf(settings);
       const midnight = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
       const minutesNow = date.getHours() * 60 + date.getMinutes();
@@ -844,9 +828,11 @@ window.__ModuleLoader__.load({
         },
         h(Styles, { key: "css" }),
         h("span", { key: "label" }, labelOf(view, "dock")),
-        view.kind === "rest"
-          ? null
-          : h("span", { className: "dsh-offwork-dock-value", key: "value" }, formatDuration(view.msLeft, settings.dockSeconds))
+        h(
+          "span",
+          { className: "dsh-offwork-dock-value", key: "value" },
+          formatDuration(view.msLeft, settings.dockSeconds)
+        )
       );
     }
 
@@ -1011,11 +997,7 @@ window.__ModuleLoader__.load({
         h(
           "div",
           { className: "dsh-offwork-float-time", key: "time" },
-          view.kind === "rest"
-            ? settings.floatSeconds === false
-              ? "--:--"
-              : "--:--:--"
-            : formatDuration(view.msLeft, settings.floatSeconds)
+          formatDuration(view.msLeft, settings.floatSeconds)
         ),
         h(
           "div",
@@ -1026,7 +1008,7 @@ window.__ModuleLoader__.load({
           "div",
           { className: "dsh-offwork-float-foot", key: "foot" },
           h("span", null, footer),
-          h("span", null, view.kind === "rest" ? "—" : `${percent}%`)
+          h("span", null, `${percent}%`)
         )
       );
     }

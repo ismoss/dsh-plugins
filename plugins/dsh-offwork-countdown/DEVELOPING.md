@@ -33,12 +33,14 @@ v3（计时文案存整句）的数据都能直接升级。
 ## 时间计算
 
 - `viewAt(date, settings)` → `{ kind, target, msLeft, progress }`，
-  `kind ∈ rest | before | working | lunch | after`，`target ∈ start | lunchStart | lunchEnd | end`。
-- 周一到周五算工作日；`end <= start` 视为跨夜班次（不拆午休）。
+  `kind ∈ before | working | lunch | after`，`target ∈ start | lunchStart | lunchEnd | end`。
+- **不区分工作日和周末**：公司电脑、大小周，天天按同一套时间跑（11-06 按用户要求去掉的，
+  别再自作主张加回「今天休息」）。
+- `end <= start` 视为跨夜班次（不拆午休）。
 - 午休只在起止确实落在上下班之间时生效，否则按没有午休处理。
 - 进度条跟着 `target` 走：数下班 = 已干活比例（午休剔除）；数午饭 = 上午时段比例；
   午休 = 午休比例。
-- `timerElapsed()` 的基准是 `max(当天上班, 上次点击)`，休息日与上班前返回 `null`。
+- `timerElapsed()` 的基准是 `max(当天上班, 上次点击)`，上班前返回 `null`（不显示）。
 - 关秒只影响 `formatDuration(ms, false)` 的输出（`HH:MM`）；悬浮卡片同时收窄
   （`floatWidth` → 190px）并把字号提到 46px，否则右边会空一块。
 
