@@ -16,8 +16,9 @@
 | `client.js` | 浏览器半，`window.__ModuleLoader__.load({ id: '<包名>', factory })` |
 | `locale/{zh,en}.json` | 插件页标题与描述（`meta.title` / `meta.description`） |
 | `icon.svg` | 插件页图标，原创或许可允许再分发，≤256 KiB |
-| `README.md` | **用户视角**：这个插件干什么、配置在哪（会被宿主整篇渲染到插件页上） |
 | `DEVELOPING.md` | 开发视角：注册表、数据字段、时间/边界规则、已知坑、校验命令 |
+
+**不要放 `README.md`**（见下方硬约定）：宿主会把包里的 README 整篇渲染到插件页。
 
 3. 根 `README.md` 的插件表加一行。
 4. 有可测的纯函数就写 `test/logic.mjs`（不引测试框架，直接断言 + 退出码），`npm test` 要能跑。
@@ -29,8 +30,9 @@
   token 并都带 fallback。
 - **不碰 profile**：安装、卸载一律走 dsh 的 `plugin_manager`，不要手改 profile 的
   `package.json` 或 `node_modules`。
-- **README 是给用户看的**：宿主会把 `README.md` 整篇渲染到插件页，所以里面别写
-  「已知坑 / 校验 / 数据格式」这类开发内容，那属于 `DEVELOPING.md`。
+- **插件包里不放 `README.md`**：宿主会把包的 README 整篇渲染到插件页，和简介 + 配置卡片
+  重复。用户向信息写进 `locale/*.json` 的 `meta.description` 与配置卡片，其余写
+  `DEVELOPING.md`。
 - **界面文案走 locale**：`zh` / `en` 两份字典都要齐，不要硬编码裸中文（注释除外）。
 - **只在 dsh 提供的 slot 里渲染**，不要往 `document.body` 追加节点。
 - **提交只 add 自己碰过的路径**：仓库可能同时有别的会话在改，`git add -A` 会把别人

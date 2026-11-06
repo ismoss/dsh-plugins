@@ -6,7 +6,7 @@
 | 插件 | 一句话 | 目录 |
 |---|---|---|
 | **下班倒计时** `dsh-offwork-countdown` | 输入框下方的下班倒计时 + 点一下归零的计时器 + 可拖动的悬浮卡片 | [plugins/dsh-offwork-countdown](./plugins/dsh-offwork-countdown) |
-| **便签** `dsh-sticky-notes` | 输入框旁的便签开关 + 可拖动便签板；正文落到宿主机的 `notes.md`，换浏览器、重启都在，AI 也能直接读写 | [plugins/dsh-sticky-notes](./plugins/dsh-sticky-notes) |
+| **便签** `dsh-sticky-notes` | 一个工作区一份 Markdown 的编号便签：用量栏点一下直接写，侧栏「自动化任务」下面有独立便签页；AI 用 `sticky_notes` 工具按编号读写，可边执行边把结果追回同一张 | [plugins/dsh-sticky-notes](./plugins/dsh-sticky-notes) |
 
 ## 怎么装
 
@@ -27,12 +27,14 @@ plugins/
     cordis.patch.yml       # 往 profile 里插入的插件行
     index.js               # Host 半（没有 Host 逻辑时 export apply 空实现）
     client.js              # 浏览器半，window.__ModuleLoader__.load 自执行
-    locale/{zh,en}.json    # 插件页显示的标题与描述
+    locale/{zh,en}.json    # 插件页显示的标题与描述（放这里的信息才会出现在插件页顶部）
     icon.svg               # 插件页图标（≤256KiB，留在包内）
-    README.md              # 用户视角：插件干什么、怎么配（会整篇渲染到插件页）
     DEVELOPING.md          # 开发视角：注册表、数据字段、边界规则、已知坑、校验
     test/logic.mjs         # 纯函数单测，node test/logic.mjs
 ```
+
+**不要给插件放 `README.md`**：宿主会把包的 README 整篇渲染到插件页，标题、表格、已知坑
+全都会顶在用户面前，和简介 + 配置卡片重复。上面这个 `DEVELOPING.md` 才是该写文档的地方。
 
 刻意保持简单：**没有构建步骤、没有 npm 依赖、没有 CI 配置**。`client.js` 改完
 `node --check` + `node test/logic.mjs` 就算验过。
