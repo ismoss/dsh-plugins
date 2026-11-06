@@ -1,0 +1,47 @@
+{
+  "name": "dsh-sticky-notes",
+  "version": "1.0.0",
+  "description": "DeepSeek Harness 便签插件：便签正文落到宿主机的 notes.md（纯 Markdown），换浏览器、重启都在，AI 也能直接读写；输入框旁开关，页面上是可拖动的便签板。",
+  "author": "moss",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ismoss/dsh-plugins.git",
+    "directory": "plugins/dsh-sticky-notes"
+  },
+  "scripts": {
+    "test": "node test/logic.mjs",
+    "check": "node --check client.js && node --check index.js && node --check notes.js && node --check store.js && node test/logic.mjs"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "notes.js",
+    "store.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    }
+  }
+}

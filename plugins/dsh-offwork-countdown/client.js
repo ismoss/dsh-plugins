@@ -52,6 +52,8 @@ window.__ModuleLoader__.load({
     };
     const MINUTE = 60000;
     const CARD_WIDTH = 268;
+    /** 关掉秒之后的宽度（数字从 8 个字符变成 5 个）。 */
+    const CARD_WIDTH_COMPACT = 190;
     const DRAG_THRESHOLD = 4;
 
     /* ------------------------------------------------------------------ *
@@ -85,9 +87,7 @@ window.__ModuleLoader__.load({
       "float.footerLunch": "午饭时间",
       "float.footerLunchEnd": "午休结束",
       "float.tip": "拖动可以移动；双击关闭",
-      "group.time": "时间",
-      "group.lunch": "午休",
-      "group.morning": "上午",
+      "group.general": "通用",
       "group.dock": "用量栏",
       "group.timer": "计时器",
       "group.float": "悬浮窗",
@@ -156,9 +156,7 @@ window.__ModuleLoader__.load({
       "float.footerLunch": "Lunch at",
       "float.footerLunchEnd": "Back at",
       "float.tip": "Drag to move · double-click to close",
-      "group.time": "Time",
-      "group.lunch": "Lunch break",
-      "group.morning": "Morning",
+      "group.general": "General",
       "group.dock": "Dock",
       "group.timer": "Timer",
       "group.float": "Floating card",
@@ -517,8 +515,9 @@ window.__ModuleLoader__.load({
     /* ------------------------------------------------------------------ *
      * 悬浮窗的位置：右上 / 右下，拖动后记住
      * ------------------------------------------------------------------ */
-    function clampPos(pos) {
-      const maxX = Math.max(8, window.innerWidth - CARD_WIDTH - 8);
+    function clampPos(pos, width) {
+      const cardWidth = width > 0 ? width : CARD_WIDTH;
+      const maxX = Math.max(8, window.innerWidth - cardWidth - 8);
       const maxY = Math.max(8, window.innerHeight - 72);
       return {
         x: Math.min(Math.max(8, pos.x), maxX),
@@ -526,11 +525,17 @@ window.__ModuleLoader__.load({
       };
     }
 
+    /** 关掉秒之后数字短一大截，卡片跟着收窄，不然右边会空一块。 */
+    function floatWidth(settings) {
+      return settings.floatSeconds === false ? CARD_WIDTH_COMPACT : CARD_WIDTH;
+    }
+
     /** 右上或右下；`height` 是卡片实测高度（首帧拿不到时按 150 估）。 */
-    function anchorPos(side, height) {
+    function anchorPos(side, height, width) {
       const cardHeight = height > 0 ? height : 150;
+      const cardWidth = width > 0 ? width : CARD_WIDTH;
       return clampPos({
-        x: window.innerWidth - CARD_WIDTH - 24,
+        x: window.innerWidth - cardWidth - 24,
         y:
           side === "bottom"
             ? window.innerHeight - cardHeight - 96
@@ -582,6 +587,8 @@ window.__ModuleLoader__.load({
   margin:6px 0 10px;font-size:40px;line-height:1.12;font-weight:600;letter-spacing:-.01em;
   color:var(--dsw-alias-label-primary,CanvasText);
 }
+/* 关掉秒之后只剩「01:27」五个字符：字号提一档、卡片同时收窄，两边的留白才不显得空。 */
+.dsh-offwork-float[data-compact="true"] .dsh-offwork-float-time{font-size:46px;margin:9px 0 12px}
 .dsh-offwork-float-track{
   height:6px;border-radius:3px;overflow:hidden;
   background:var(--dsw-alias-border-l1,rgba(127,127,127,.24));
@@ -813,8 +820,9 @@ window.__ModuleLoader__.load({
       const settings = useSettings();
       const visible = settings.float === true;
       const now = useSecondTick(visible);
+      const width = floatWidth(settings);
       const [pos, setPos] = React.useState(() =>
-        settings.pos === null ? anchorPos(settings.floatSide, 0) : clampPos(settings.pos)
+        settings.pos === null ? anchorPos(settings.floatSide, 0, width) : clampPos(settings.pos, width)
       );
       const drag = React.useRef(null);
       const cardRef = React.useRef(null);
@@ -825,17 +833,17 @@ window.__ModuleLoader__.load({
       React.useLayoutEffect(() => {
         if (!visible) return;
         if (settings.pos !== null) {
-          setPos(clampPos(settings.pos));
+          setPos(clampPos(settings.pos, width));
           return;
         }
-        setPos(anchorPos(settings.floatSide, cardRef.current === null ? 0 : cardRef.current.offsetHeight));
-      }, [posKey, settings.floatSide, visible]);
+        setPos(anchorPos(settings.floatSide, cardRef.current === null ? 0 : cardRef.current.offsetHeight, width));
+      }, [posKey, settings.floatSide, visible, width]);
       // 窗口尺寸变了 → 收回视野。
       React.useEffect(() => {
-        const onResize = () => setPos((previous) => clampPos(previous));
+        const onResize = () => setPos((previous) => clampPos(previous, width));
         window.addEventListener("resize", onResize);
         return () => window.removeEventListener("resize", onResize);
-      }, []);
+      }, [width]);
 
       const moveTo = (event) => {
         const current = drag.current;
@@ -845,7 +853,7 @@ window.__ModuleLoader__.load({
         if (!current.moved && Math.abs(dx) + Math.abs(dy) < DRAG_THRESHOLD) return;
         current.moved = true;
         setPos(
-          clampPos({ x: event.clientX - current.offsetX, y: event.clientY - current.offsetY })
+          clampPos({ x: event.clientX - current.offsetX, y: event.clientY - current.offsetY }, width)
         );
       };
 
@@ -874,10 +882,13 @@ window.__ModuleLoader__.load({
         if (!current.moved) return;
         // 只把最终位置写进设置，拖动过程中不碰 localStorage。
         writeSettings({
-          pos: clampPos({
-            x: event.clientX - current.offsetX,
-            y: event.clientY - current.offsetY
-          })
+          pos: clampPos(
+            {
+              x: event.clientX - current.offsetX,
+              y: event.clientY - current.offsetY
+            },
+            width
+          )
         });
       };
 
@@ -894,8 +905,9 @@ window.__ModuleLoader__.load({
           ref: cardRef,
           className: "dsh-offwork-float",
           role: "group",
+          "data-compact": settings.floatSeconds === false ? "true" : "false",
           "aria-label": `${label} — ${footer}`,
-          style: { left: `${pos.x}px`, top: `${pos.y}px`, width: `${CARD_WIDTH}px` },
+          style: { left: `${pos.x}px`, top: `${pos.y}px`, width: `${width}px` },
           title: translate("float.tip"),
           onPointerDown,
           onPointerMove: moveTo,
@@ -916,7 +928,11 @@ window.__ModuleLoader__.load({
         h(
           "div",
           { className: "dsh-offwork-float-time", key: "time" },
-          view.kind === "rest" ? "--:--:--" : formatDuration(view.msLeft, settings.floatSeconds)
+          view.kind === "rest"
+            ? settings.floatSeconds === false
+              ? "--:--"
+              : "--:--:--"
+            : formatDuration(view.msLeft, settings.floatSeconds)
         ),
         h(
           "div",
@@ -1020,7 +1036,7 @@ window.__ModuleLoader__.load({
         "div",
         { className: "dsh-offwork-page" },
 
-        group("time", "group.time", [
+        group("general", "group.general", [
           row(
             "work-hours",
             "settings.timeTitle",
@@ -1031,10 +1047,7 @@ window.__ModuleLoader__.load({
               timeField("start", "settings.start", false),
               timeField("end", "settings.end", false)
             )
-          )
-        ]),
-
-        group("lunch", "group.lunch", [
+          ),
           row(
             "lunch-switch",
             "settings.lunch",
@@ -1055,10 +1068,7 @@ window.__ModuleLoader__.load({
               timeField("lunchStart", "settings.lunchStart", settings.lunch !== true),
               timeField("lunchEnd", "settings.lunchEnd", settings.lunch !== true)
             )
-          )
-        ]),
-
-        group("morning", "group.morning", [
+          ),
           row(
             "morning-switch",
             "settings.morningLunch",
@@ -1346,7 +1356,8 @@ window.__ModuleLoader__.load({
         scheduleOf,
         workProgress,
         timerElapsed,
-        timerLabelOf
+        timerLabelOf,
+        floatWidth
       };
     }
     return api;

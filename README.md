@@ -6,6 +6,7 @@
 | 插件 | 一句话 | 目录 |
 |---|---|---|
 | **下班倒计时** `dsh-offwork-countdown` | 输入框下方的下班倒计时 + 点一下归零的计时器 + 可拖动的悬浮卡片 | [plugins/dsh-offwork-countdown](./plugins/dsh-offwork-countdown) |
+| **便签** `dsh-sticky-notes` | 输入框旁的便签开关 + 可拖动便签板；正文落到宿主机的 `notes.md`，换浏览器、重启都在，AI 也能直接读写 | [plugins/dsh-sticky-notes](./plugins/dsh-sticky-notes) |
 
 ## 怎么装
 

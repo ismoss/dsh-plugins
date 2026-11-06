@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Sticky notes">
+  <title>Sticky notes</title>
+  <defs>
+    <linearGradient id="sticky-bg" x1="0" y1="0" x2="0.4" y2="1">
+      <stop offset="0" stop-color="#334155"/>
+      <stop offset="1" stop-color="#0f172a"/>
+    </linearGradient>
+    <linearGradient id="sticky-note" x1="0" y1="0" x2="0.6" y2="1">
+      <stop offset="0" stop-color="#fde68a"/>
+      <stop offset="1" stop-color="#f59e0b"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="16" fill="url(#sticky-bg)"/>
+  <rect x="27" y="14" width="23" height="27" rx="3" fill="#ffffff" opacity="0.26" transform="rotate(8 38.5 27.5)"/>
+  <path d="M15 17h24l7 7v23a3 3 0 0 1-3 3H15a3 3 0 0 1-3-3V20a3 3 0 0 1 3-3z" fill="url(#sticky-note)"/>
+  <path d="M39 17v7h7z" fill="#b45309" opacity="0.55"/>
+  <path d="M19 30h18M19 35h18M19 40h12" fill="none" stroke="#78350f" stroke-width="2.4" stroke-linecap="round" opacity="0.72"/>
+  <circle cx="48" cy="48" r="7" fill="#10b981" stroke="#0f172a" stroke-width="2.4"/>
+  <path d="M44.8 48l2.2 2.2 4.2-4.4" fill="none" stroke="#ffffff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

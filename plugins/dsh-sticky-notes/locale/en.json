@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Sticky Notes",
+    "description": "A notes toggle beside the composer and a draggable sticky-note board. Note bodies live in notes.md on the host as plain Markdown, so they survive browser changes and restarts and remain readable by an AI; the browser stores only the board's open state and position."
+  }
+}

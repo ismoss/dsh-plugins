@@ -52,7 +52,7 @@ const near = (label, actual, expected, tolerance = 1000) => {
   console.log(`${ok ? "PASS" : "FAIL"}  ${label}${ok ? "" : `  (got ${actual}, want ~${expected})`}`);
 };
 
-const { parseClock, viewAt, formatDuration, normalize, percentOf, scheduleOf, timerElapsed, timerLabelOf } =
+const { parseClock, viewAt, formatDuration, normalize, percentOf, scheduleOf, timerElapsed, timerLabelOf, floatWidth } =
   module.__internals;
 const MIN = 60000;
 const settings = { start: "09:00", end: "18:00" };
@@ -68,6 +68,8 @@ check("formatDuration 负数按 0", formatDuration(-5000), "00:00:00");
 check("formatDuration 跨 100 小时", formatDuration(100 * 3600 * 1000), "100:00:00");
 check("formatDuration 关掉秒", formatDuration(27 * MIN + 7000, false), "00:27");
 check("formatDuration 关掉秒仍不丢小时", formatDuration(5 * 3600 * 1000 + 59 * MIN, false), "05:59");
+check("有秒时悬浮窗宽 268", floatWidth({}), 268);
+check("关秒后悬浮窗收窄到 190", floatWidth({ floatSeconds: false }), 190);
 
 // ── 工作日各时段 ──────────────────────────────────────────────────────
 const workday = (h, m, s = 0) => new Date(2026, 10, 5, h, m, s); // 2026-11-05 周四
