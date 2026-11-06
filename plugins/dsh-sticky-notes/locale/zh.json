@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "便签",
-    "description": "输入框旁的便签开关与可拖动便签板。正文保存在宿主机的 notes.md（纯 Markdown），换浏览器、重启都在，AI 也能直接读写；浏览器只记面板开关与位置。"
+    "description": "按 DSH 工作区分区的编号便签：用量栏点一下就在当前工作区写一张，侧栏「自动化任务」下面有独立便签页。正文以纯 Markdown 存在 ~/.dsh/sticky-notes/（可用 DSH_STICKY_NOTES_DIR 改），AI 用 sticky_notes 工具按编号读写，边执行边把结果追回同一张便签。"
   }
 }

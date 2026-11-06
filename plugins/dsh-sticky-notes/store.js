@@ -1,25 +1,61 @@
 /**
  * dsh-sticky-notes — Host 侧的便签文件存储。
  *
- * 这里只认一个绝对路径：读就是 readFile，写就是「同目录临时文件 + rename」。
- * 所有变更串行执行，因此两个浏览器同时保存时不会把文件写成半截；每个变更都
- * 先重新读文件，所以 AI 或编辑器在外部改过 notes.md 也能被下一次保存接住。
+ * 一个工作区一份 Markdown，落在插件自己的目录里（默认 `$DSH_HOME/sticky-notes/`）：
+ * 不往用户的仓库里丢文件，同时文件本身还是纯文本，能备份、能进同步盘、能直接看。
  *
- * 文件不存在不是错误：第一次保存时创建目录和文件。
+ * 文件名 = 目录名 slug + 工作区路径哈希，因此不需要索引文件：列一次目录就知道有哪
+ * 几个工作区有便签。工作区路径记在文件开头的元数据行里，换机器后仍能认出来。
+ *
+ * 并发：所有读写串行执行；写文件用「同目录临时文件 + rename」，每次变更都先重新读，
+ * 所以 AI、编辑器、另一个浏览器在外面改过文件也会被下一次保存接住。
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
 import {
   NotesError,
+  applyAppend,
   applyRemove,
   applySave,
   assertFileSize,
   parseNotesFile,
   serializeNotesFile
 } from "./notes.js";
+
+const FILE_SUFFIX = ".md";
+
+function hashOf(value) {
+  return createHash("sha1").update(value, "utf8").digest("hex").slice(0, 8);
+}
+
+function slugOf(value) {
+  const text = String(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32);
+  return text === "" ? "ws" : text;
+}
+
+/**
+ * Windows 路径大小写不敏感、两种分隔符等价：同一目录的任意写法必须落到同一个文件。
+ * 归一化成「正斜杠 + 小写 + 无尾分隔符」。
+ */
+export function workspaceKey(path) {
+  const text = String(path ?? "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/\/+$/, "");
+  return text.toLowerCase();
+}
+
+export function fileForWorkspace(dir, path) {
+  const text = String(path ?? "");
+  return join(dir, `${slugOf(basename(text.replace(/[\\/]+$/, "")) || text)}-${hashOf(workspaceKey(text))}${FILE_SUFFIX}`);
+}
 
 function revisionOf(text, exists) {
   if (!exists) return "empty";
@@ -35,46 +71,50 @@ function ioError(error, file) {
 }
 
 /**
- * @param {{file: string, displayPath: string}} options
+ * @param {{dir: string, displayDir?: string}} options
  */
-export function createNotesStore(options) {
-  const file = options.file;
-  const displayPath = options.displayPath;
-  let queue = Promise.resolve();
+export function createWorkspaceStore(options) {
+  const dir = options.dir;
+  const displayDir = options.displayDir ?? dir;
+  const queues = new Map();
 
-  /** 所有读写排进同一条链；单个请求失败不阻断后面的请求。 */
-  function exclusive(work) {
-    const run = queue.then(work, work);
-    queue = run.then(
+  /** 每个文件一条串行链；单个请求失败不阻断后面的请求。 */
+  function exclusive(file, work) {
+    const previous = queues.get(file) ?? Promise.resolve();
+    const run = previous.then(work, work);
+    const settled = run.then(
       () => undefined,
       () => undefined
     );
+    queues.set(file, settled);
+    void settled.then(() => {
+      if (queues.get(file) === settled) queues.delete(file);
+    });
     return run;
   }
 
-  async function read() {
-    let text = "";
-    let exists = true;
+  async function readFileIfExists(file) {
+    let buffer;
     try {
-      text = await readFile(file, "utf8");
+      buffer = await readFile(file);
     } catch (error) {
-      if (error?.code === "ENOENT") {
-        exists = false;
-      } else {
-        throw ioError(error, file);
-      }
+      if (error?.code === "ENOENT") return { text: "", exists: false };
+      throw ioError(error, file);
     }
-    if (exists) assertFileSize(text);
-    const parsed = parseNotesFile(text);
-    return {
-      notes: parsed.notes,
-      preamble: parsed.preamble,
-      text,
-      exists
-    };
+    let text;
+    try {
+      // 非 UTF-8（GBK/UTF-16/半个坏字节）一旦被 `${…}` 式解码成 U+FFFD，下一次保存就会把
+      // 整份文件永久写坏。这里用 fatal 解码，宁可报错也不动它。
+      text = new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+    } catch {
+      throw new NotesError("sticky/encoding", "the notes file is not valid UTF-8; refusing to rewrite it", {
+        path: file
+      });
+    }
+    return { text, exists: true };
   }
 
-  async function writeAtomic(text) {
+  async function writeAtomic(file, text) {
     assertFileSize(text);
     const directory = dirname(file);
     const temporary = join(directory, `.${basename(file)}.${process.pid}.${randomUUID()}.tmp`);
@@ -83,88 +123,147 @@ export function createNotesStore(options) {
       await writeFile(temporary, text, "utf8");
       try {
         await rename(temporary, file);
+        return;
       } catch (error) {
-        // Windows 上目标文件被杀毒/索引短暂占住时 rename 会 EPERM/EACCES。
-        // 直写不原子，但比“明明保存了却报错”更不容易丢内容。
-        if (error?.code === "EPERM" || error?.code === "EACCES" || error?.code === "EEXIST") {
-          await writeFile(file, text, "utf8");
-          await rm(temporary, { force: true });
-        } else {
-          throw error;
-        }
+        // Windows 上目标文件被索引/杀毒/同步盘短暂占住时 rename 会 EPERM/EACCES。
+        if (error?.code !== "EPERM" && error?.code !== "EACCES" && error?.code !== "EEXIST") throw error;
+        // 退化路径不原子：先把现有内容留一份 .bak，直写失败时 temp 也留着（里面是新内容）。
+        await copyFile(file, `${file}.bak`).catch(() => undefined);
+        await writeFile(file, text, "utf8");
+        await rm(temporary, { force: true });
       }
     } catch (error) {
-      await rm(temporary, { force: true }).catch(() => undefined);
       throw ioError(error, file);
     }
   }
 
-  function snapshot(current, text) {
+  function summarize(workspace, title, notes, file) {
+    let updatedAt = "";
+    for (const note of notes) {
+      if (note.updatedAt > updatedAt) updatedAt = note.updatedAt;
+    }
+    return { workspace, title, count: notes.length, updatedAt, file, displayPath: `${displayDir}/${basename(file)}` };
+  }
+
+  async function load(workspace) {
+    const file = fileForWorkspace(dir, workspace);
+    const current = await readFileIfExists(file);
+    const parsed = parseNotesFile(current.text);
+    return { file, current, parsed };
+  }
+
+  function group(workspace, title, parsed, file, revision, exists) {
     return {
-      notes: current.notes,
-      revision: revisionOf(text, current.exists),
+      workspace,
+      title,
+      notes: parsed.notes,
+      revision,
       path: file,
-      displayPath,
-      exists: current.exists,
-      loadedAt: Date.now()
+      displayPath: `${displayDir}/${basename(file)}`,
+      exists
     };
   }
 
   return {
-    /** 读取当前文件；不存在时返回空列表而不是报错。 */
-    list() {
-      return exclusive(async () => {
-        const current = await read();
-        return snapshot(current, current.text);
+    readonly: true,
+    dir,
+
+    /** 当前工作区的全部便签；没有文件时返回空列表而不是报错。 */
+    list(workspace) {
+      const target = String(workspace ?? "").trim();
+      return exclusive(fileForWorkspace(dir, target), async () => {
+        const { file, current, parsed } = await load(target);
+        return group(target, parsed.meta.title, parsed, file, revisionOf(current.text, current.exists), current.exists);
       });
     },
 
-    /**
-     * 新建或修改。`raw` 就是便签本身；`baseRev` 见 notes.js 的 applySave。
-     */
-    save(raw) {
-      return exclusive(async () => {
-        const current = await read();
+    /** 所有工作区的概览（页面左侧的分组列表用）。 */
+    async groups() {
+      let entries;
+      try {
+        entries = await readdir(dir, { withFileTypes: true });
+      } catch (error) {
+        if (error?.code === "ENOENT") return [];
+        throw ioError(error, dir);
+      }
+      const files = entries.filter((entry) => entry.isFile() && entry.name.endsWith(FILE_SUFFIX)).map((entry) => join(dir, entry.name));
+      const groups = [];
+      for (const file of files) {
+        try {
+          const current = await readFileIfExists(file);
+          const parsed = parseNotesFile(current.text);
+          const workspace = parsed.meta.workspace;
+          if (workspace === "") continue;
+          groups.push(summarize(workspace, parsed.meta.title, parsed.notes, file));
+        } catch (error) {
+          console.warn("[dsh-sticky-notes] skip unreadable notes file", file, error?.message ?? error);
+        }
+      }
+      groups.sort((left, right) => {
+        if (left.updatedAt !== right.updatedAt) return right.updatedAt.localeCompare(left.updatedAt);
+        return left.workspace.localeCompare(right.workspace);
+      });
+      return groups;
+    },
+
+    /** 新建或修改。`note` 里带 `no` 就是改，不带就是新建。 */
+    save(workspace, note) {
+      const target = String(workspace ?? "").trim();
+      return exclusive(fileForWorkspace(dir, target), async () => {
+        const { file, current, parsed } = await load(target);
         const now = new Date().toISOString();
-        const { notes, note } = applySave(current.notes, raw, {
-          now,
-          newId: () => randomUUID()
+        const result = applySave(parsed.notes, note, { now, newId: () => randomUUID(), lastNo: parsed.meta.lastNo });
+        const text = serializeNotesFile(result.notes, parsed.preamble, {
+          workspace: target,
+          title: parsed.meta.title,
+          lastNo: parsed.meta.lastNo
         });
-        const text = serializeNotesFile(notes, current.preamble);
-        await writeAtomic(text);
+        await writeAtomic(file, text);
         return {
-          note,
-          notes,
-          revision: revisionOf(text, true),
-          path: file,
-          displayPath,
-          exists: true
+          note: result.note,
+          ...group(target, parsed.meta.title, { notes: result.notes }, file, revisionOf(text, true), true)
         };
       });
     },
 
-    /**
-     * 删除。
-     *
-     * @param {{id: string, baseRev?: number|null}} raw
-     */
-    remove(raw) {
-      return exclusive(async () => {
-        const current = await read();
-        const id = raw !== null && typeof raw === "object" && typeof raw.id === "string" ? raw.id : "";
-        const baseRev = raw !== null && typeof raw === "object" && Number.isInteger(raw.baseRev) ? raw.baseRev : null;
-        const { notes, removed } = applyRemove(current.notes, id, baseRev);
-        const text = serializeNotesFile(notes, current.preamble);
-        await writeAtomic(text);
+    /** 往某张便签末尾追加正文。 */
+    append(workspace, no, text) {
+      const target = String(workspace ?? "").trim();
+      return exclusive(fileForWorkspace(dir, target), async () => {
+        const { file, current, parsed } = await load(target);
+        const now = new Date().toISOString();
+        const result = applyAppend(parsed.notes, no, text, { now });
+        const next = serializeNotesFile(result.notes, parsed.preamble, {
+          workspace: target,
+          title: parsed.meta.title,
+          lastNo: parsed.meta.lastNo
+        });
+        await writeAtomic(file, next);
         return {
-          removed,
-          notes,
-          revision: revisionOf(text, true),
-          path: file,
-          displayPath,
-          exists: true
+          note: result.note,
+          ...group(target, parsed.meta.title, { notes: result.notes }, file, revisionOf(next, true), true)
         };
       });
-    }
+    },
+
+    /** 删除某张便签。 */
+    remove(workspace, no, baseRev) {
+      const target = String(workspace ?? "").trim();
+      return exclusive(fileForWorkspace(dir, target), async () => {
+        const { file, current, parsed } = await load(target);
+        const result = applyRemove(parsed.notes, no, Number.isInteger(baseRev) ? baseRev : null);
+        const text = serializeNotesFile(result.notes, parsed.preamble, {
+          workspace: target,
+          title: parsed.meta.title,
+          lastNo: parsed.meta.lastNo
+        });
+        await writeAtomic(file, text);
+        return {
+          removed: result.removed,
+          ...group(target, parsed.meta.title, { notes: result.notes }, file, revisionOf(text, true), true)
+        };
+      });
+    },
+
   };
 }

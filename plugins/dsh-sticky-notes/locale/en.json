@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "Sticky Notes",
-    "description": "A notes toggle beside the composer and a draggable sticky-note board. Note bodies live in notes.md on the host as plain Markdown, so they survive browser changes and restarts and remain readable by an AI; the browser stores only the board's open state and position."
+    "title": "Sticky notes",
+    "description": "Numbered notes grouped by DSH workspace: click Sticky notes in the composer dock to write into the current workspace, or open the notes panel under Automation tasks in the sidebar. Bodies are plain Markdown under ~/.dsh/sticky-notes/ (override with DSH_STICKY_NOTES_DIR); the agent reads and writes them by number through the sticky_notes tool."
   }
 }

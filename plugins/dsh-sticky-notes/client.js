@@ -1,17 +1,17 @@
 /**
  * dsh-sticky-notes — 浏览器半。
  *
- * 便签正文不在 localStorage：这里通过 Connection 的通用 RPC 通道
- * `/dsh-sticky-notes` 调 Host 半的 `list` / `save` / `remove`，Host 把内容落到
- * `notes.md`。localStorage 只存「面板开不开、拖到哪」这类界面偏好。
+ * 便签正文不在浏览器里：这里通过 Host 的 `/api/sticky-notes` 读写，Host 把内容落到
+ * 「一个工作区一份 Markdown」。localStorage 只存界面偏好（点用量栏便签时的行为）。
  *
- * 三个座位：
- *   1. `conversation.composer.dock` —— 用量栏里的「便签」开关 + 数量；
- *   2. `shell.overlay` —— 可拖动的便签板：列表、编辑、置顶、颜色、删除；
- *   3. `plugins.bundle.config` —— 插件页上的存储位置与格式说明。
+ * 三处落点：
+ *   1. `conversation.composer.dock` —— 用量栏里的「便签 N」入口；
+ *   2. `shell.overlay`            —— 点入口后直接写一张新便签的小卡片；
+ *   3. `sidebar.panellist` + `main` —— 侧栏（自动化任务下面）一个「便签」图标，
+ *      打开独立的便签页：左边按工作区分组，右边是编号便签与编辑区。
  *
- * 编辑策略：输入后 650ms 防抖保存，保存串行执行；`rev` 对不上时进入冲突态，
- * 由用户选择覆盖或放弃，绝不静默盖掉另一处刚写的内容。
+ * 为什么浏览器半知道「当前工作区」：每张会话卡片会把 sessionId 报给 Host，
+ * Host 用 workingDirectory 解析出目录，所以在这里写下的便签天然落在当前工作区。
  */
 
 window.__ModuleLoader__.load({
@@ -24,182 +24,182 @@ window.__ModuleLoader__.load({
     const ROUTE = "/api/sticky-notes";
     const DOCK_SLOT = "conversation.composer.dock";
     const OVERLAY_SLOT = "shell.overlay";
-    const PANEL_SLOT = "plugins.bundle.config";
+    const PANEL_SLOT = "main";
+    const NAV_SLOT = "sidebar.panellist";
+    const CONFIG_SLOT = "plugins.bundle.config";
+    const PANEL_ID = "sticky-notes";
     const PREFS_KEY = "dsh-sticky-notes/prefs";
-    const BOARD_WIDTH = 360;
-    const SAVE_DELAY = 650;
-    const COLORS = ["yellow", "pink", "blue", "green", "purple", "gray"];
 
     /* ------------------------------------------------------------------ *
-     * 文案：内置中英两份；locale 服务可用时注册进它的命名空间。
+     * 文案
      * ------------------------------------------------------------------ */
     const ZH = {
       "dock.label": "便签",
-      "dock.tip": "打开或收起便签板",
-      "board.title": "便签",
-      "board.new": "新建",
-      "board.refresh": "刷新",
-      "board.close": "关闭",
-      "board.back": "返回",
-      "board.loading": "正在读取便签…",
-      "board.empty": "还没有便签",
-      "board.emptyHint": "点「新建」写第一张；内容保存在宿主机的 notes.md 里。",
-      "board.untitled": "未命名便签",
-      "board.pinned": "已置顶",
-      "board.pin": "置顶",
-      "board.unpin": "取消置顶",
-      "board.color": "颜色",
-      "board.titlePlaceholder": "标题",
-      "board.bodyPlaceholder": "写点什么…（支持 Markdown，保存的是原文）",
-      "board.saving": "保存中…",
-      "board.saved": "已保存",
-      "board.unsaved": "未保存",
-      "board.saveFailed": "保存失败",
-      "board.retry": "重试保存",
-      "board.delete": "删除",
-      "board.deleteConfirm": "再点一次删除",
-      "board.cancel": "取消",
-      "board.conflictShort": "有冲突",
-      "board.conflictDesc": "这张便签在你编辑时被别处改过，本地内容没有覆盖它。",
-      "board.overwrite": "覆盖保存",
-      "board.discard": "放弃本地改动",
-      "board.errorTitle": "便签读取失败",
-      "board.updated": "更新于",
-      "board.count": "{n} 张",
-      "board.file": "文件",
-      "board.copy": "复制路径",
-      "board.copied": "已复制",
-      "board.noteAria": "打开便签：{title}",
-      "color.yellow": "黄色",
-      "color.pink": "粉色",
-      "color.blue": "蓝色",
-      "color.green": "绿色",
-      "color.purple": "紫色",
-      "color.gray": "灰色",
-      "panel.title": "便签",
-      "panel.desc": "便签正文保存在宿主机的 Markdown 文件里，换浏览器、重启 DSH 都还在；文件也可以直接交给 AI 读写。",
-      "panel.storage": "存储位置",
-      "panel.storageDesc": "默认在 DSH 主目录下；要放进同步盘或 git 仓库，把 DSH_STICKY_NOTES_FILE 指过去并重启 DSH。",
-      "panel.path": "文件路径",
-      "panel.count": "当前便签",
-      "panel.open": "打开便签板",
-      "panel.refresh": "重新读取",
-      "panel.format": "文件格式",
-      "panel.formatDesc": "每个 `## 标题` 是一张便签；标题下一行的 HTML 注释保存 id、颜色、置顶和时间。改正文时请保留这一行，删掉就会变成一张新便签。",
-      "panel.local": "本地只存界面偏好",
-      "panel.localDesc": "浏览器 localStorage 只记面板开合与位置；便签正文只在宿主文件里，不会被浏览器清掉。",
-      "panel.status": "连接状态",
-      "panel.connected": "已连接宿主",
-      "panel.offline": "还没连上宿主",
-      "panel.error": "读取失败",
-      "panel.copy": "复制路径",
-      "panel.copied": "已复制",
-      "status.conflict": "这张便签刚在别处被改过，没有覆盖。可以覆盖保存，或放弃本地改动。",
-      "status.notFound": "这张便签已经不存在了。",
-      "status.tooLarge": "内容超出上限：单张正文 20000 字，整个文件 2 MB。",
-      "status.invalid": "标题和内容不能都为空。",
-      "status.forbidden": "只有本机 owner 可以读写便签。",
-      "status.network": "连不上宿主，检查 DSH 是否还在运行。",
-      "status.offline": "还没连上宿主，稍后再试。",
-      "status.protocol": "宿主返回了看不懂的响应。",
-      "status.io": "宿主读写 notes.md 失败。",
-      "status.internal": "宿主内部错误。",
-      "status.unknown": "未知错误。",
-      "time.justNow": "刚刚",
-      "time.minutesAgo": "{n} 分钟前",
-      "time.hoursAgo": "{n} 小时前",
-      "time.daysAgo": "{n} 天前",
-      "time.unknown": "时间未知"
+      "dock.tip": "便签：写一张，或者打开便签页",
+      "quick.title": "新便签",
+      "quick.workspace": "写入",
+      "quick.heading": "标题（可留空）",
+      "quick.body": "写点什么…Ctrl+Enter 保存并关闭",
+      "quick.save": "保存并关闭",
+      "quick.cancel": "取消",
+      "quick.saving": "保存中…",
+      "quick.empty": "写点内容再保存",
+      "quick.failed": "保存失败",
+      "quick.noWorkspace": "这个会话还没有工作区目录，先在会话里选一个工作区",
+      "page.title": "便签",
+      "page.subtitle": "按工作区分组；#号就是交给 AI 时用的编号",
+      "page.new": "新建便签",
+      "page.refresh": "刷新",
+      "page.all": "所有工作区",
+      "page.current": "当前工作区",
+      "page.workspaces": "工作区",
+      "page.noCurrent": "打开一个会话后，这里会显示它的工作区",
+      "page.empty": "这个工作区还没有便签",
+      "page.emptyHint": "点「新建便签」，或在用量栏点一下「便签」直接写。",
+      "page.emptyAll": "还没有任何便签",
+      "justNow": "刚刚",
+      "page.loading": "正在读取便签…",
+      "page.failed": "读取失败",
+      "page.retry": "重试",
+      "page.untitled": "未命名便签",
+      "page.notes": "{n} 张便签",
+      "page.copyNo": "点击复制编号，跟 AI 说「按 {n} 号便签执行」",
+      "page.close": "收起",
+      "page.save": "保存",
+      "page.overwrite": "覆盖保存",
+      "page.reload": "载入最新",
+      "page.conflict": "这张便签在别处被改过；可以载入最新，或直接用当前内容覆盖",
+      "page.deleteConflict": "这张便签在别处被改过；再点一次删除就是不管它直接删",
+      "page.saveFailed": "保存失败",
+      "page.saving": "保存中…",
+      "page.saved": "已保存",
+      "page.delete": "删除",
+      "page.deleteConfirm": "再点一次删除",
+      "page.titlePlaceholder": "标题",
+      "page.bodyPlaceholder": "正文（Markdown 原文）",
+      "page.settings": "设置",
+      "set.dock": "用量栏入口",
+      "set.dock.desc": "在输入框下面显示「便签」",
+      "set.click": "点用量栏「便签」时",
+      "set.click.desc": "默认直接新建，也可以直接跳到便签页",
+      "set.view": "打开便签页时先看",
+      "set.view.desc": "记住你上次在便签页里停在哪一栏",
+      "set.view.current": "当前工作区",
+      "set.view.all": "所有工作区",
+      "set.autoRefresh": "自动刷新",
+      "set.autoRefresh.desc": "每 10 秒对一次，AI 追加进便签的内容会自己出现",
+      "set.confirmDelete": "删除前确认",
+      "set.confirmDelete.desc": "关掉后点「删除」直接删掉，不再问一次",
+
+      "page.click.quick": "直接新建便签",
+      "page.click.panelCurrent": "打开便签页（当前工作区）",
+      "page.click.panelAll": "打开便签页（所有工作区）",
+      "page.dir": "存储目录",
+      "page.toolsHint": "AI 用 sticky_notes 工具按编号读写这些便签。",
+      "config.title": "便签",
+      "config.desc": "一个工作区一份 Markdown，AI 也能直接读写。",
+      "config.where": "存储目录",
+      "config.count": "便签数",
+      "config.tool": "给 AI 的工具",
+      "config.toolValue": "sticky_notes（list / read / write / append / delete）"
     };
     const EN = {
       "dock.label": "Notes",
-      "dock.tip": "Open or close the sticky notes board",
-      "board.title": "Sticky notes",
-      "board.new": "New",
-      "board.refresh": "Refresh",
-      "board.close": "Close",
-      "board.back": "Back",
-      "board.loading": "Loading notes…",
-      "board.empty": "No notes yet",
-      "board.emptyHint": "Click New to write the first one; notes live in notes.md on the host.",
-      "board.untitled": "Untitled note",
-      "board.pinned": "Pinned",
-      "board.pin": "Pin",
-      "board.unpin": "Unpin",
-      "board.color": "Color",
-      "board.titlePlaceholder": "Title",
-      "board.bodyPlaceholder": "Write something… (Markdown is kept as-is)",
-      "board.saving": "Saving…",
-      "board.saved": "Saved",
-      "board.unsaved": "Unsaved",
-      "board.saveFailed": "Save failed",
-      "board.retry": "Retry save",
-      "board.delete": "Delete",
-      "board.deleteConfirm": "Click again to delete",
-      "board.cancel": "Cancel",
-      "board.conflictShort": "Conflict",
-      "board.conflictDesc": "This note changed elsewhere while you were editing; your text did not overwrite it.",
-      "board.overwrite": "Overwrite",
-      "board.discard": "Discard my changes",
-      "board.errorTitle": "Could not load notes",
-      "board.updated": "Updated",
-      "board.count": "{n} notes",
-      "board.file": "File",
-      "board.copy": "Copy path",
-      "board.copied": "Copied",
-      "board.noteAria": "Open note: {title}",
-      "color.yellow": "Yellow",
-      "color.pink": "Pink",
-      "color.blue": "Blue",
-      "color.green": "Green",
-      "color.purple": "Purple",
-      "color.gray": "Gray",
-      "panel.title": "Sticky notes",
-      "panel.desc": "Notes live in a Markdown file on the host, so they survive browser changes and DSH restarts — and an AI can read or edit the file directly.",
-      "panel.storage": "Storage",
-      "panel.storageDesc": "Defaults to the DSH home. Point DSH_STICKY_NOTES_FILE at a synced folder or a git checkout to share it across machines, then restart DSH.",
-      "panel.path": "File",
-      "panel.count": "Notes",
-      "panel.open": "Open board",
-      "panel.refresh": "Reload",
-      "panel.format": "File format",
-      "panel.formatDesc": "Each `## title` starts one note. The HTML comment on the next line stores its id, color, pin and timestamps — keep it when you edit the body, or the note becomes a new one.",
-      "panel.local": "Only UI preferences are local",
-      "panel.localDesc": "The browser's localStorage stores just whether the board is open and where it sits; note bodies live only in the host file.",
-      "panel.status": "Connection",
-      "panel.connected": "Connected to host",
-      "panel.offline": "Host not connected",
-      "panel.error": "Load failed",
-      "panel.copy": "Copy path",
-      "panel.copied": "Copied",
-      "status.conflict": "This note changed elsewhere; nothing was overwritten. Overwrite it or discard your local changes.",
-      "status.notFound": "This note no longer exists.",
-      "status.tooLarge": "Too large: one body is capped at 20,000 characters and the file at 2 MB.",
-      "status.invalid": "A note needs a title or a body.",
-      "status.forbidden": "Only the local owner can read or write notes.",
-      "status.network": "Cannot reach the host. Is DSH still running?",
-      "status.offline": "The host is not connected yet. Try again in a moment.",
-      "status.protocol": "The host returned a response this client cannot read.",
-      "status.io": "The host could not read or write notes.md.",
-      "status.internal": "Internal host error.",
-      "status.unknown": "Unknown error.",
-      "time.justNow": "just now",
-      "time.minutesAgo": "{n} min ago",
-      "time.hoursAgo": "{n} h ago",
-      "time.daysAgo": "{n} d ago",
-      "time.unknown": "unknown time"
+      "dock.tip": "Sticky notes: write one, or open the notes page",
+      "quick.title": "New note",
+      "quick.workspace": "Saving to",
+      "quick.heading": "Title (optional)",
+      "quick.body": "Write something… Ctrl+Enter saves and closes",
+      "quick.save": "Save and close",
+      "quick.cancel": "Cancel",
+      "quick.saving": "Saving…",
+      "quick.empty": "Write something first",
+      "quick.failed": "Save failed",
+      "quick.noWorkspace": "This session has no workspace directory yet",
+      "page.title": "Notes",
+      "page.subtitle": "Grouped by workspace; the # number is what you give the agent",
+      "page.new": "New note",
+      "page.refresh": "Refresh",
+      "page.all": "All workspaces",
+      "page.current": "Current workspace",
+      "page.workspaces": "Workspaces",
+      "page.noCurrent": "Open a session and its workspace appears here",
+      "page.empty": "No notes in this workspace yet",
+      "page.emptyHint": "Use “New note”, or click Notes in the composer dock.",
+      "page.emptyAll": "No notes anywhere yet",
+      "justNow": "just now",
+      "page.loading": "Loading notes…",
+      "page.failed": "Could not load notes",
+      "page.retry": "Retry",
+      "page.untitled": "Untitled note",
+      "page.notes": "{n} notes",
+      "page.number": "Number",
+      "page.copyNo": "Copy the number, then ask the agent to act on note {n}",
+      "page.copied": "Number copied",
+      "page.edit": "Edit",
+      "page.close": "Close",
+      "page.save": "Save",
+      "page.overwrite": "Overwrite",
+      "page.reload": "Load latest",
+      "page.conflict": "This note changed elsewhere; load the latest version or overwrite it with what you have",
+      "page.deleteConflict": "This note changed elsewhere; click delete again to remove it anyway",
+      "page.saveFailed": "Could not save",
+      "page.saving": "Saving…",
+      "page.saved": "Saved",
+      "page.delete": "Delete",
+      "page.deleteConfirm": "Click again to delete",
+      "page.titlePlaceholder": "Title",
+      "page.bodyPlaceholder": "Body (Markdown source)",
+      "page.updated": "updated {when}",
+      "page.newLabel": "New note",
+      "page.writing": "Writing to: {where}",
+      "page.settings": "Settings",
+      "set.dock": "Composer dock chip",
+      "set.dock.desc": "Show Sticky notes under the composer",
+      "set.click": "Clicking the dock chip",
+      "set.click.desc": "Write a note right away, or jump to the notes panel",
+      "set.view": "Opening the notes panel",
+      "set.view.desc": "Remember which grouping you looked at last",
+      "set.view.current": "Current workspace",
+      "set.view.all": "All workspaces",
+      "set.autoRefresh": "Auto refresh",
+      "set.autoRefresh.desc": "Poll every 10s so notes the agent appends show up",
+      "set.confirmDelete": "Confirm before delete",
+      "set.confirmDelete.desc": "When off, Delete removes the note immediately",
+
+      "page.click.quick": "Write a new note",
+      "page.click.panelCurrent": "Open the notes page (current workspace)",
+      "page.click.panelAll": "Open the notes page (all workspaces)",
+      "page.dir": "Storage directory",
+      "page.toolsHint": "The agent reads and writes these notes through the sticky_notes tool.",
+      "config.title": "Sticky notes",
+      "config.desc": "One Markdown file per workspace; the agent can read and write it too.",
+      "config.where": "Storage directory",
+      "config.count": "Notes",
+      "config.tool": "Agent tool",
+      "config.toolValue": "sticky_notes (list / read / write / append / delete)"
     };
 
-    let translate = (key) => (Object.prototype.hasOwnProperty.call(ZH, key) ? ZH[key] : key);
     let localeFace;
 
-    /** 带 `{n}` 这类占位符的文案。 */
-    function tf(key, vars) {
-      let text = translate(key);
+    function t(key, vars) {
+      const dict = /^zh/i.test(currentLocale()) ? ZH : EN;
+      let value = dict[key] ?? ZH[key] ?? key;
       if (vars !== undefined && vars !== null) {
-        for (const name of Object.keys(vars)) text = text.split(`{${name}}`).join(String(vars[name]));
+        for (const name of Object.keys(vars)) value = value.split(`{${name}}`).join(String(vars[name]));
       }
-      return text;
+      return value;
+    }
+
+    function currentLocale() {
+      try {
+        const snapshot = localeFace?.getLocale?.();
+        const id = typeof snapshot === "string" ? snapshot : snapshot?.id ?? snapshot?.locale;
+        if (typeof id === "string" && id !== "") return id;
+      } catch {
+        /* 读不到就用浏览器语言 */
+      }
+      return typeof navigator !== "undefined" ? navigator.language ?? "en" : "en";
     }
 
     /** locale 切换后重渲染一次：翻译函数在调用时读当前语言，但需要有人叫醒组件。 */
@@ -213,19 +213,28 @@ window.__ModuleLoader__.load({
     }
 
     /* ------------------------------------------------------------------ *
-     * 面板开合 / 位置：只存 localStorage
+     * 界面偏好：只存 localStorage
      * ------------------------------------------------------------------ */
     function isRecord(value) {
       return value !== null && typeof value === "object" && !Array.isArray(value);
     }
 
+    const CLICK_MODES = ["quick", "panel-current", "panel-all"];
+
     function normalizePrefs(raw) {
       const source = isRecord(raw) ? raw : {};
-      const pos =
-        isRecord(source.pos) && Number.isFinite(source.pos.x) && Number.isFinite(source.pos.y)
-          ? { x: source.pos.x, y: source.pos.y }
-          : null;
-      return { open: source.open === true, pos };
+      return {
+        // 用量栏里那个「便签」入口要不要出现
+        dock: source.dock !== false,
+        click: CLICK_MODES.includes(source.click) ? source.click : "quick",
+        // 打开便签页时先看哪一栏
+        defaultView: source.defaultView === "all" ? "all" : "current",
+        // 每 10 秒对一次，AI 追加的内容会自己出现
+        autoRefresh: source.autoRefresh !== false,
+        // 删除便签要不要点两下
+        confirmDelete: source.confirmDelete !== false,
+        lastWorkspace: typeof source.lastWorkspace === "string" ? source.lastWorkspace : ""
+      };
     }
 
     function readPrefs() {
@@ -233,7 +242,7 @@ window.__ModuleLoader__.load({
         const text = window.localStorage.getItem(PREFS_KEY);
         return text === null ? normalizePrefs(null) : normalizePrefs(JSON.parse(text));
       } catch (error) {
-        console.warn(`[${NS}] 界面偏好读取失败，使用默认值：`, error);
+        console.warn(`[${NS}] cannot read prefs, using defaults:`, error);
         return normalizePrefs(null);
       }
     }
@@ -246,13 +255,13 @@ window.__ModuleLoader__.load({
       try {
         window.localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
       } catch (error) {
-        console.warn(`[${NS}] 界面偏好未能写入 localStorage（本次仍然生效）：`, error);
+        console.warn(`[${NS}] cannot persist prefs (still applies this session):`, error);
       }
       for (const listener of prefListeners) {
         try {
           listener(prefs);
         } catch (error) {
-          console.warn(`[${NS}] 偏好订阅者抛错：`, error);
+          console.warn(`[${NS}] pref listener failed:`, error);
         }
       }
     }
@@ -261,186 +270,232 @@ window.__ModuleLoader__.load({
       const [snapshot, setSnapshot] = React.useState(prefs);
       React.useEffect(() => {
         setSnapshot(prefs);
-        const listener = (next) => setSnapshot(next);
-        prefListeners.add(listener);
-        return () => {
-          prefListeners.delete(listener);
-        };
+        prefListeners.add(setSnapshot);
+        return () => prefListeners.delete(setSnapshot);
       }, []);
       return snapshot;
     }
 
     /* ------------------------------------------------------------------ *
-     * 便签数据：模块级单一真相 + 订阅；正文全部走 Host RPC
+     * 与 Host 的通道
      * ------------------------------------------------------------------ */
-    let api = null;
-    let attached = false;
-    let refreshing = null;
-    let localMutations = 0;
-    let store = {
-      status: "idle",
-      notes: [],
-      revision: "empty",
-      path: "",
-      displayPath: "",
-      exists: false,
-      loadedAt: 0,
-      error: null
-    };
-    const storeListeners = new Set();
-
-    function publish(patch) {
-      store = { ...store, ...patch };
-      for (const listener of storeListeners) {
-        try {
-          listener(store);
-        } catch (error) {
-          console.warn(`[${NS}] 便签订阅者抛错：`, error);
-        }
-      }
-    }
-
-    function subscribeStore(listener) {
-      storeListeners.add(listener);
-      return () => {
-        storeListeners.delete(listener);
-      };
-    }
-
-    function useStore() {
-      const [snapshot, setSnapshot] = React.useState(store);
-      React.useEffect(() => {
-        setSnapshot(store);
-        return subscribeStore(setSnapshot);
-      }, []);
-      return snapshot;
-    }
-
-    class StickyClientError extends Error {
+    class NotesClientError extends Error {
       constructor(code, message, details) {
         super(message);
-        this.name = "StickyClientError";
+        this.name = "NotesClientError";
         this.code = code;
-        this.details = details ?? {};
+        this.details = isRecord(details) ? details : {};
       }
     }
 
     function toClientError(error) {
-      if (error instanceof StickyClientError) {
-        return { code: error.code, message: error.message, details: error.details };
-      }
-      const code = typeof error?.code === "string" ? error.code : "sticky/network";
+      if (error instanceof NotesClientError) return { code: error.code, message: error.message, details: error.details };
       return {
-        code,
+        code: typeof error?.code === "string" ? error.code : "sticky/network",
         message: error?.message ?? String(error),
-        details: isRecord(error?.details) ? error.details : {}
+        details: {}
       };
     }
 
-    function createApi(fetchImpl) {
-      const doFetch = typeof fetchImpl === "function" ? fetchImpl : (...args) => globalThis.fetch(...args);
-      async function call(method, payload) {
-        let response;
-        try {
-          response = await doFetch(ROUTE, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ method, payload })
-          });
-        } catch (error) {
-          throw new StickyClientError("sticky/network", error?.message ?? String(error), {});
+    async function call(method, payload) {
+      let response;
+      try {
+        const options = {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ method, payload: payload ?? {} })
+        };
+        if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
+          options.signal = AbortSignal.timeout(15000);
         }
-        if (response === null || typeof response !== "object") {
-          throw new StickyClientError("sticky/protocol", "the host returned no response");
-        }
-        if (response.status === 401 || response.status === 403) {
-          throw new StickyClientError("sticky/forbidden", "the host rejected this browser as not the owner", {});
-        }
-        if (response.ok !== true) {
-          throw new StickyClientError("sticky/network", `the host answered HTTP ${String(response.status)}`, {
-            status: response.status
-          });
-        }
-        let result;
-        try {
-          result = await response.json();
-        } catch (error) {
-          throw new StickyClientError("sticky/protocol", error?.message ?? "the host answered non-JSON", {});
-        }
-        if (!isRecord(result)) {
-          throw new StickyClientError("sticky/protocol", "the host returned no result envelope");
-        }
-        if (result.ok === true) return result.value;
-        const failure = isRecord(result.error) ? result.error : {};
-        throw new StickyClientError(
-          typeof failure.code === "string" ? failure.code : "sticky/unknown",
-          typeof failure.message === "string" ? failure.message : "",
-          isRecord(failure.details) ? failure.details : {}
+        response = await globalThis.fetch(ROUTE, options);
+      } catch (error) {
+        const timedOut = error?.name === "TimeoutError" || error?.name === "AbortError";
+        throw new NotesClientError(
+          "sticky/network",
+          timedOut ? "the host did not answer within 15s" : (error?.message ?? String(error))
         );
       }
-      return {
-        list: () => call("list", {}),
-        save: (note) => call("save", { note }),
-        remove: (id, baseRev) => call("remove", { id, baseRev })
-      };
+      if (response === null || typeof response !== "object") {
+        throw new NotesClientError("sticky/protocol", "the host returned no response");
+      }
+      if (response.status === 401 || response.status === 403) {
+        throw new NotesClientError("sticky/forbidden", "the host rejected this browser as not the owner");
+      }
+      if (response.ok !== true) {
+        throw new NotesClientError("sticky/network", `the host answered HTTP ${String(response.status)}`, {
+          status: response.status
+        });
+      }
+      let result;
+      try {
+        result = await response.json();
+      } catch (error) {
+        throw new NotesClientError("sticky/protocol", error?.message ?? "the host answered non-JSON");
+      }
+      if (!isRecord(result)) throw new NotesClientError("sticky/protocol", "the host returned no envelope");
+      if (result.ok === true) return result.value;
+      const failure = isRecord(result.error) ? result.error : {};
+      throw new NotesClientError(
+        typeof failure.code === "string" ? failure.code : "sticky/unknown",
+        typeof failure.message === "string" ? failure.message : "",
+        failure.details
+      );
     }
 
-    function refresh(options = {}) {
-      if (api === null) {
-        publish({ status: "offline", error: { code: "sticky/offline", message: "", details: {} } });
-        return Promise.resolve();
-      }
-      if (refreshing !== null) return refreshing;
-      const quiet = options.quiet === true;
-      const before = localMutations;
-      if (!quiet) publish({ status: "loading" });
+    /* ------------------------------------------------------------------ *
+     * 数据：模块级单一真相 + 订阅
+     * ------------------------------------------------------------------ */
+    let state = {
+      status: "idle", // idle | loading | ready | error
+      dir: "",
+      sessionId: "",
+      current: "",
+      currentLive: false,
+      currentTitle: "",
+      groups: [], // [{ workspace, title, count, updatedAt }]
+      selected: "", // "" = 未选；"*" = 所有工作区
+      group: null, // { workspace, title, notes: [] }
+      all: {}, // workspace -> group（“所有工作区”视图）
+      error: null,
+      editing: false
+    };
+    const listeners = new Set();
+    const pendingGroups = new Map();
 
-      refreshing = (async () => {
+    function publish(patch) {
+      state = { ...state, ...patch };
+      for (const listener of listeners) {
         try {
-          const data = await api.list();
-          if (before !== localMutations) return;
+          listener(state);
+        } catch (error) {
+          console.warn(`[${NS}] listener failed:`, error);
+        }
+      }
+    }
+
+    function useStore() {
+      const [snapshot, setSnapshot] = React.useState(state);
+      React.useEffect(() => {
+        setSnapshot(state);
+        listeners.add(setSnapshot);
+        return () => listeners.delete(setSnapshot);
+      }, []);
+      return snapshot;
+    }
+
+    function upsertGroup(group) {
+      if (!isRecord(group) || typeof group.workspace !== "string") return;
+      const notes = Array.isArray(group.notes) ? group.notes : [];
+      const entry = {
+        workspace: group.workspace,
+        title: typeof group.title === "string" ? group.title : "",
+        count: notes.length,
+        updatedAt: notes.reduce((latest, note) => (note.updatedAt > latest ? note.updatedAt : latest), "")
+      };
+      const groups = state.groups.filter((item) => item.workspace !== group.workspace).concat(entry);
+      groups.sort((left, right) => {
+        if (left.updatedAt !== right.updatedAt) return String(right.updatedAt).localeCompare(String(left.updatedAt));
+        return String(left.workspace).localeCompare(String(right.workspace));
+      });
+      const patch = { groups, status: "ready", error: null };
+      if (state.selected === group.workspace) patch.group = { ...group, notes };
+      if (state.selected === "*") patch.all = { ...state.all, [group.workspace]: { ...group, notes } };
+      publish(patch);
+    }
+
+    async function refreshGroups(sessionId) {
+      const wanted = typeof sessionId === "string" && sessionId !== "" ? sessionId : state.sessionId;
+      const slot = wanted === "" ? "-" : wanted;
+      const running = pendingGroups.get(slot);
+      if (running !== undefined) return running;
+      const before = state.status;
+      if (before !== "ready") publish({ status: "loading" });
+      const job = (async () => {
+        try {
+          const data = await call("groups", { sessionId: wanted });
+          const groups = Array.isArray(data?.groups) ? data.groups : [];
+          const resolved = typeof data?.current === "string" ? data.current : "";
+          // 宿主没有会话可问（比如从侧栏直接打开便签页）时，用这个浏览器记住的最后一个工作区。
+          const remembered = state.current !== "" ? state.current : prefs.lastWorkspace;
+          const current = resolved !== "" ? resolved : remembered;
+          const currentLive = resolved !== "";
+          const known = groups.find((item) => item.workspace === current);
+          const currentTitle = resolved !== "" && isRecord(data?.workspace) && typeof data.workspace.title === "string"
+            ? data.workspace.title
+            : known?.title ?? (current === state.current ? state.currentTitle : "");
+          let selected = state.selected;
+          if (selected === "" && current !== "") selected = current;
+          if (selected === "" && groups.length > 0) selected = groups[0].workspace;
           publish({
             status: "ready",
-            notes: Array.isArray(data?.notes) ? data.notes : [],
-            revision: typeof data?.revision === "string" ? data.revision : "empty",
-            path: typeof data?.path === "string" ? data.path : "",
-            displayPath: typeof data?.displayPath === "string" ? data.displayPath : "",
-            exists: data?.exists === true,
-            loadedAt: typeof data?.loadedAt === "number" ? data.loadedAt : Date.now(),
+            dir: typeof data?.dir === "string" ? data.dir : "",
+            current,
+            currentLive,
+            currentTitle,
+            groups,
+            selected,
             error: null
           });
+          if (current !== "") writePrefs({ lastWorkspace: current });
+          // 正在编辑时不要用服务端内容回灌，否则会把草稿换掉。
+          if (selected !== "" && selected !== "*" && !state.editing) await loadNotes(selected);
         } catch (error) {
           publish({ status: "error", error: toClientError(error) });
         } finally {
-          refreshing = null;
+          pendingGroups.delete(slot);
         }
       })();
-      return refreshing;
+      pendingGroups.set(slot, job);
+      return job;
     }
 
-    function attach() {
-      if (attached) return;
+    let notesToken = 0;
+
+    async function loadNotes(workspace) {
+      const token = (notesToken += 1);
       try {
-        api = createApi();
-        attached = true;
+        const group = await call("notes", { workspace });
+        // 只有最后一次请求的回包算数：快速点 A→B 时，A 的慢回包不能把界面拨回去。
+        if (token !== notesToken) return group;
+        if (state.selected === "*") {
+          publish({ all: { ...state.all, [workspace]: group } });
+        } else {
+          publish({ group, selected: workspace, error: null });
+        }
+        return group;
       } catch (error) {
-        publish({ status: "error", error: toClientError(error) });
-        return;
+        if (token === notesToken) publish({ status: "error", error: toClientError(error) });
+        return null;
       }
-      void refresh({ quiet: true });
     }
 
-    /** 便签列表的展示顺序：置顶优先，其余保持文件顺序。 */
-    function orderNotes(notes) {
-      return (Array.isArray(notes) ? notes : [])
-        .map((note, index) => ({ note, index }))
-        .sort((left, right) => {
-          const pin = (right.note.pinned === true ? 1 : 0) - (left.note.pinned === true ? 1 : 0);
-          return pin !== 0 ? pin : left.index - right.index;
-        })
-        .map((entry) => entry.note);
+    async function loadAll() {
+      publish({ selected: "*", status: state.status === "ready" ? "ready" : "loading" });
+      const groups = state.groups;
+      for (const item of groups) {
+        if (!isRecord(state.all[item.workspace])) {
+          await loadNotes(item.workspace);
+        }
+      }
+      publish({ status: "ready" });
     }
 
+    async function saveNote(workspace, note) {
+      const group = await call("save", { workspace, note });
+      upsertGroup(group);
+      return group;
+    }
+
+    async function removeNote(workspace, no, baseRev) {
+      const group = await call("remove", { workspace, no, baseRev });
+      upsertGroup(group);
+      return group;
+    }
+
+    /* ------------------------------------------------------------------ *
+     * 小工具
+     * ------------------------------------------------------------------ */
     function previewOf(body, max) {
       const text = typeof body === "string" ? body.replace(/\s+/g, " ").trim() : "";
       const limit = Number.isFinite(max) && max > 0 ? max : 120;
@@ -448,355 +503,261 @@ window.__ModuleLoader__.load({
       return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
     }
 
-    function relativeTime(iso, now, t) {
+    function timeAgo(iso) {
       const time = typeof iso === "string" ? Date.parse(iso) : Number.NaN;
-      if (!Number.isFinite(time)) return t("time.unknown");
-      const diff = Math.max(0, (Number.isFinite(now) ? now : Date.now()) - time);
-      if (diff < 45000) return t("time.justNow");
+      if (Number.isNaN(time)) return "";
+      const diff = Math.max(0, Date.now() - time);
       const minutes = Math.floor(diff / 60000);
-      if (minutes < 60) return t("time.minutesAgo", { n: minutes });
+      if (minutes < 1) return t("justNow");
+      if (minutes < 60) return `${minutes}m`;
       const hours = Math.floor(minutes / 60);
-      if (hours < 24) return t("time.hoursAgo", { n: hours });
+      if (hours < 24) return `${hours}h`;
       const days = Math.floor(hours / 24);
-      if (days < 7) return t("time.daysAgo", { n: days });
-      return new Date(time).toLocaleDateString();
+      if (days < 30) return `${days}d`;
+      return new Date(time).toISOString().slice(0, 10);
     }
 
-    function errorText(error) {
-      if (error === null || error === undefined) return "";
-      switch (error.code) {
-        case "sticky/conflict":
-          return translate("status.conflict");
-        case "sticky/not-found":
-          return translate("status.notFound");
-        case "sticky/too-large":
-          return translate("status.tooLarge");
-        case "sticky/invalid":
-          return translate("status.invalid");
-        case "sticky/forbidden":
-          return translate("status.forbidden");
-        case "sticky/offline":
-          return translate("status.offline");
-        case "sticky/network":
-          return translate("status.network");
-        case "sticky/protocol":
-          return translate("status.protocol");
-        case "sticky/io":
-          return translate("status.io");
-        case "sticky/internal":
-          return translate("status.internal");
-        default:
-          return typeof error.message === "string" && error.message !== ""
-            ? error.message
-            : translate("status.unknown");
+    function shortPath(path) {
+      const text = String(path ?? "");
+      const parts = text.split(/[\\/]+/).filter(Boolean);
+      if (parts.length <= 2) return text;
+      return `…${parts.slice(-2).join("\\")}`;
+    }
+
+    function openPanel(view) {
+      try {
+        const layout = typeof ctxRef === "object" && ctxRef !== null ? ctxRef.get?.("layout") : undefined;
+        layout?.selectPanel?.(PANEL_ID);
+      } catch (error) {
+        console.warn(`[${NS}] cannot open the notes panel:`, error);
+      }
+      if (view === "all") {
+        void loadAll();
+      } else if (view === "current" && state.current !== "") {
+        void loadNotes(state.current);
       }
     }
 
-    function draftOf(note) {
-      return {
-        id: note.id,
-        title: note.title,
-        body: note.body,
-        color: note.color,
-        pinned: note.pinned === true,
-        rev: note.rev,
-        createdAt: note.createdAt,
-        updatedAt: note.updatedAt
-      };
-    }
+    let ctxRef = null;
+    let quickOpen = false;
+    const quickListeners = new Set();
 
-    function emptyDraft() {
-      return {
-        id: null,
-        title: "",
-        body: "",
-        color: "yellow",
-        pinned: false,
-        rev: null,
-        createdAt: "",
-        updatedAt: ""
-      };
-    }
-
-    function draftKey(draft) {
-      if (draft === null || draft === undefined) return "";
-      return `${draft.title}\u0000${draft.body}\u0000${draft.color}\u0000${draft.pinned === true ? "1" : "0"}`;
-    }
-
-    function saveLabel(status) {
-      switch (status) {
-        case "saving":
-          return translate("board.saving");
-        case "saved":
-          return translate("board.saved");
-        case "dirty":
-          return translate("board.unsaved");
-        case "conflict":
-          return translate("board.conflictShort");
-        case "error":
-          return translate("board.saveFailed");
-        default:
-          return "";
+    function setQuickOpen(next) {
+      quickOpen = next === true;
+      for (const listener of quickListeners) {
+        try {
+          listener(quickOpen);
+        } catch (error) {
+          console.warn(`[${NS}] quick listener failed:`, error);
+        }
       }
     }
 
-    /* ------------------------------------------------------------------ *
-     * 位置
-     * ------------------------------------------------------------------ */
-    function boardWidth() {
-      return Math.min(BOARD_WIDTH, Math.max(280, (typeof window === "undefined" ? 1024 : window.innerWidth) - 16));
-    }
-
-    function clampPos(pos) {
-      const width = boardWidth();
-      const maxX = Math.max(8, (window.innerWidth || 1024) - width - 8);
-      const maxY = Math.max(8, (window.innerHeight || 800) - 96);
-      return {
-        x: Math.min(Math.max(8, Number.isFinite(pos?.x) ? pos.x : 8), maxX),
-        y: Math.min(Math.max(8, Number.isFinite(pos?.y) ? pos.y : 8), maxY)
-      };
-    }
-
-    function defaultPos() {
-      const width = boardWidth();
-      return clampPos({
-        x: (window.innerWidth || 1024) - width - 24,
-        y: Math.max(72, Math.round((window.innerHeight || 800) * 0.12))
-      });
+    function useQuickOpen() {
+      const [value, setValue] = React.useState(quickOpen);
+      React.useEffect(() => {
+        setValue(quickOpen);
+        quickListeners.add(setValue);
+        return () => quickListeners.delete(setValue);
+      }, []);
+      return value;
     }
 
     /* ------------------------------------------------------------------ *
      * 样式
      * ------------------------------------------------------------------ */
     const CSS = `
-.dsh-sticky-dock{
+.dsh-notes-dock{
   appearance:none;display:inline-flex;align-items:center;gap:5px;min-width:0;
   padding:0;border:0;border-radius:6px;background:transparent;
   font:inherit;font-size:12px;line-height:18px;white-space:nowrap;
   color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.92));
   cursor:pointer;user-select:none;
 }
-.dsh-sticky-dock:hover{color:var(--dsw-alias-label-primary,CanvasText)}
-.dsh-sticky-dock:active{opacity:.7}
-.dsh-sticky-dock:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:2px}
-.dsh-sticky-dock-count{
-  min-width:16px;padding:0 4px;border-radius:999px;
-  background:var(--dsw-alias-bg-layer-2,rgba(127,127,127,.16));
-  font-size:11px;line-height:16px;text-align:center;font-variant-numeric:tabular-nums;
-  color:var(--dsw-alias-label-secondary,rgba(127,127,127,.9));
-}
-
-.dsh-sticky-board{
-  position:fixed;z-index:950;box-sizing:border-box;pointer-events:auto;
-  width:min(360px,calc(100vw - 16px));
-  max-height:min(560px,calc(100vh - 96px));
+.dsh-notes-dock:hover{color:var(--dsw-alias-label-primary,CanvasText)}
+.dsh-notes-dock:active{opacity:.7}
+.dsh-notes-dock:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:2px}
+.dsh-notes-quick{
+  position:fixed;right:24px;bottom:132px;z-index:940;box-sizing:border-box;
+  width:min(420px,calc(100vw - 32px));max-height:min(480px,calc(100vh - 160px));
   display:flex;flex-direction:column;
-  border-radius:14px;border:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.24));
+  border-radius:12px;border:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.24));
   background:var(--dsw-alias-bg-overlay,Canvas);
-  box-shadow:0 18px 48px rgba(0,0,0,.24);
+  box-shadow:0 16px 44px rgba(0,0,0,.22);
   color:var(--dsw-alias-label-primary,CanvasText);
   overflow:hidden;
 }
-.dsh-sticky-head{
-  display:flex;align-items:center;gap:7px;flex:none;
-  padding:10px 10px 9px 12px;
-  border-bottom:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.18));
-  cursor:grab;user-select:none;touch-action:none;
-}
-.dsh-sticky-head:active{cursor:grabbing}
-.dsh-sticky-mark{
-  flex:none;width:24px;height:24px;border-radius:7px;color:#fff;
-  display:flex;align-items:center;justify-content:center;
-  background:linear-gradient(135deg,#f2b705,#d97706);
-}
-.dsh-sticky-heading{display:flex;flex-direction:column;gap:1px;flex:1;min-width:0}
-.dsh-sticky-title{font-size:13px;line-height:18px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.dsh-sticky-sub{font-size:11px;line-height:15px;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.9));white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.dsh-sticky-head-actions{display:flex;align-items:center;gap:2px;flex:none}
-.dsh-sticky-iconbtn{
-  appearance:none;flex:none;width:26px;height:26px;padding:0;border:0;border-radius:7px;
-  background:transparent;color:var(--dsw-alias-label-secondary,rgba(127,127,127,.9));
-  display:flex;align-items:center;justify-content:center;cursor:pointer;
-}
-.dsh-sticky-iconbtn:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.12));color:var(--dsw-alias-label-primary,CanvasText)}
-.dsh-sticky-iconbtn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:1px}
-.dsh-sticky-iconbtn:disabled{opacity:.45;cursor:default}
-
-.dsh-sticky-list{display:flex;flex-direction:column;gap:6px;padding:8px;overflow:auto;min-height:0}
-.dsh-sticky-card{
-  appearance:none;display:flex;flex-direction:column;gap:3px;width:100%;box-sizing:border-box;
-  padding:8px 10px 8px 9px;border-radius:10px;text-align:left;
-  border:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.2));
-  border-left:3px solid var(--sticky-accent,#eab308);
-  background:var(--dsw-alias-bg-layer-1,rgba(127,127,127,.05));
-  color:inherit;font:inherit;cursor:pointer;
-}
-.dsh-sticky-card:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.1))}
-.dsh-sticky-card:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:1px}
-.dsh-sticky-card[data-color="yellow"]{--sticky-accent:#eab308}
-.dsh-sticky-card[data-color="pink"]{--sticky-accent:#ec4899}
-.dsh-sticky-card[data-color="blue"]{--sticky-accent:#3b82f6}
-.dsh-sticky-card[data-color="green"]{--sticky-accent:#10b981}
-.dsh-sticky-card[data-color="purple"]{--sticky-accent:#8b5cf6}
-.dsh-sticky-card[data-color="gray"]{--sticky-accent:#9ca3af}
-.dsh-sticky-card-title{
-  display:block;font-size:13px;line-height:18px;font-weight:600;
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
-}
-.dsh-sticky-card-preview{
-  display:block;font-size:12px;line-height:17px;
-  color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.92));
-  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
-}
-.dsh-sticky-card-meta{
-  display:flex;align-items:center;gap:4px;margin-top:1px;
-  font-size:11px;line-height:15px;color:var(--dsw-alias-label-dimmed,rgba(127,127,127,.75));
-  font-variant-numeric:tabular-nums;
-}
-
-.dsh-sticky-empty{
-  display:flex;flex-direction:column;align-items:center;gap:6px;
-  padding:34px 20px 38px;text-align:center;
+.dsh-notes-quick-head{display:flex;align-items:center;gap:8px;padding:10px 12px 8px}
+.dsh-notes-quick-title{font-size:13px;line-height:18px;font-weight:600;flex:1;min-width:0}
+.dsh-notes-quick-where{
+  padding:0 12px 8px;font-size:11px;line-height:16px;
   color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.9));
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
 }
-.dsh-sticky-empty-title{font-size:13px;line-height:20px;font-weight:600;color:var(--dsw-alias-label-secondary,rgba(127,127,127,.95))}
-.dsh-sticky-empty-desc{font-size:12px;line-height:18px;max-width:260px}
+.dsh-notes-quick-body{display:flex;flex-direction:column;gap:8px;padding:0 12px 10px;min-height:0}
+.dsh-notes-quick-foot{
+  display:flex;align-items:center;gap:8px;justify-content:flex-end;
+  padding:8px 12px;border-top:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.16));
+}
+.dsh-notes-status{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.9));margin-right:auto}
+.dsh-notes-status[data-kind="error"]{color:#e5484d}
 
-.dsh-sticky-editor{display:flex;flex-direction:column;gap:8px;padding:10px 12px 12px;overflow:auto;min-height:0}
-.dsh-sticky-editor-bar{display:flex;align-items:center;justify-content:space-between;gap:8px}
-.dsh-sticky-ghost{
-  appearance:none;display:inline-flex;align-items:center;gap:4px;padding:2px 7px 2px 4px;
-  border:0;border-radius:7px;background:transparent;font:inherit;font-size:12px;line-height:18px;
-  color:var(--dsw-alias-label-secondary,rgba(127,127,127,.9));cursor:pointer;
-}
-.dsh-sticky-ghost:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.12));color:var(--dsw-alias-label-primary,CanvasText)}
-.dsh-sticky-ghost:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:1px}
-.dsh-sticky-save{
-  flex:none;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.9));
-  font-variant-numeric:tabular-nums;
-}
-.dsh-sticky-save[data-state="error"]{color:#e5484d}
-.dsh-sticky-save[data-state="conflict"]{color:#d97706}
-.dsh-sticky-input,.dsh-sticky-textarea{
+.dsh-notes-input,.dsh-notes-textarea{
   appearance:none;box-sizing:border-box;width:100%;font:inherit;
-  border:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.28));
-  border-radius:8px;background:var(--dsw-alias-bg-layer-1,transparent);
-  color:var(--dsw-alias-label-primary,CanvasText);
-  padding:6px 8px;
+  border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.38));
+  border-radius:8px;background:transparent;
+  color:var(--dsw-alias-label-primary,CanvasText);padding:6px 8px;
 }
-.dsh-sticky-input{font-size:13px;line-height:20px;font-weight:600}
-.dsh-sticky-textarea{font-size:12px;line-height:19px;min-height:150px;resize:vertical;font-family:inherit}
-.dsh-sticky-input:hover,.dsh-sticky-textarea:hover{border-color:var(--dsw-alias-border-l2,rgba(127,127,127,.42))}
-.dsh-sticky-input:focus-visible,.dsh-sticky-textarea:focus-visible{
+.dsh-notes-input{font-size:13px;line-height:20px;font-weight:600}
+.dsh-notes-textarea{font-size:12px;line-height:19px;min-height:120px;resize:vertical;font-family:inherit}
+.dsh-notes-input:hover,.dsh-notes-textarea:hover{border-color:var(--dsw-alias-border-l2,rgba(127,127,127,.42))}
+.dsh-notes-input:focus-visible,.dsh-notes-textarea:focus-visible{
   outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:1px;border-color:transparent;
 }
-.dsh-sticky-tools{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
-.dsh-sticky-colors{display:flex;align-items:center;gap:6px}
-.dsh-sticky-swatch{
-  appearance:none;width:18px;height:18px;padding:0;border-radius:50%;
-  border:2px solid transparent;background:var(--swatch);cursor:pointer;
-  box-shadow:inset 0 0 0 1px rgba(0,0,0,.12);
+.dsh-notes-btn{
+  appearance:none;flex:none;padding:4px 12px;border-radius:7px;border:1px solid transparent;
+  background:var(--dsw-alias-brand-primary,#5686fe);color:#fff;
+  font:inherit;font-size:12px;line-height:18px;cursor:pointer;
 }
-.dsh-sticky-swatch[data-color="yellow"]{--swatch:#eab308}
-.dsh-sticky-swatch[data-color="pink"]{--swatch:#ec4899}
-.dsh-sticky-swatch[data-color="blue"]{--swatch:#3b82f6}
-.dsh-sticky-swatch[data-color="green"]{--swatch:#10b981}
-.dsh-sticky-swatch[data-color="purple"]{--swatch:#8b5cf6}
-.dsh-sticky-swatch[data-color="gray"]{--swatch:#9ca3af}
-.dsh-sticky-swatch[data-on="true"]{border-color:var(--dsw-alias-label-primary,CanvasText)}
-.dsh-sticky-swatch:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:2px}
-.dsh-sticky-chip{
-  appearance:none;display:inline-flex;align-items:center;gap:4px;
-  padding:3px 9px;border-radius:999px;
-  border:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.28));
-  background:transparent;font:inherit;font-size:12px;line-height:16px;
-  color:var(--dsw-alias-label-secondary,rgba(127,127,127,.9));cursor:pointer;
+.dsh-notes-btn:hover{filter:brightness(1.06)}
+.dsh-notes-btn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:2px}
+.dsh-notes-btn:disabled{opacity:.55;cursor:default;filter:none}
+.dsh-notes-btn[data-kind="ghost"]{
+  background:transparent;color:var(--dsw-alias-label-secondary,rgba(127,127,127,.9));
+  border-color:var(--dsw-alias-border-l2,rgba(127,127,127,.4));
 }
-.dsh-sticky-chip:hover{border-color:var(--dsw-alias-border-l2,rgba(127,127,127,.45));color:var(--dsw-alias-label-primary,CanvasText)}
-.dsh-sticky-chip[data-on="true"]{border-color:transparent;background:var(--dsw-alias-bg-layer-2,rgba(127,127,127,.16));color:var(--dsw-alias-label-primary,CanvasText)}
-.dsh-sticky-chip:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:1px}
-.dsh-sticky-foot{display:flex;align-items:center;justify-content:space-between;gap:10px}
-.dsh-sticky-danger{
-  appearance:none;display:inline-flex;align-items:center;gap:4px;padding:3px 8px;
-  border:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.24));border-radius:7px;
-  background:transparent;font:inherit;font-size:11px;line-height:16px;
-  color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.9));cursor:pointer;
-}
-.dsh-sticky-danger:hover{border-color:rgba(229,72,77,.55);color:#e5484d}
-.dsh-sticky-danger[data-confirm="true"]{border-color:rgba(229,72,77,.6);color:#e5484d}
-.dsh-sticky-danger:focus-visible{outline:2px solid #e5484d;outline-offset:1px}
-.dsh-sticky-stamp{font-size:11px;line-height:15px;color:var(--dsw-alias-label-dimmed,rgba(127,127,127,.75));font-variant-numeric:tabular-nums}
-.dsh-sticky-banner{
-  display:flex;flex-direction:column;gap:6px;padding:8px 10px;border-radius:9px;
-  font-size:12px;line-height:17px;
-  border:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.24));
-  background:var(--dsw-alias-bg-layer-1,rgba(127,127,127,.06));
-  color:var(--dsw-alias-label-secondary,rgba(127,127,127,.92));
-}
-.dsh-sticky-banner[data-kind="error"]{border-color:rgba(229,72,77,.38);color:#e5484d}
-.dsh-sticky-banner[data-kind="warn"]{border-color:rgba(217,119,6,.42);color:var(--dsw-alias-label-primary,CanvasText)}
-.dsh-sticky-banner-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
-.dsh-sticky-mini{
-  appearance:none;padding:3px 9px;border-radius:7px;
-  border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.4));
-  background:transparent;font:inherit;font-size:11px;line-height:16px;
-  color:var(--dsw-alias-label-secondary,rgba(127,127,127,.9));cursor:pointer;
-}
-.dsh-sticky-mini:hover{color:var(--dsw-alias-label-primary,CanvasText);border-color:var(--dsw-alias-label-dimmed,rgba(127,127,127,.6))}
-.dsh-sticky-mini:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:1px}
-.dsh-sticky-footer{
-  flex:none;display:flex;align-items:center;justify-content:space-between;gap:8px;
-  padding:7px 12px;border-top:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.16));
-  font-size:11px;line-height:15px;color:var(--dsw-alias-label-dimmed,rgba(127,127,127,.78));
-}
-.dsh-sticky-path{
-  min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
-  font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10px;
-}
+.dsh-notes-btn[data-kind="ghost"]:hover{color:var(--dsw-alias-label-primary,CanvasText)}
+.dsh-notes-btn[data-kind="danger"]{background:transparent;color:#e5484d;border-color:rgba(229,72,77,.45)}
+.dsh-notes-btn[data-kind="danger"][data-confirm="true"]{background:#e5484d;color:#fff}
 
-.dsh-sticky-panel{
-  margin:4px 0;padding:14px 16px;border-radius:12px;
-  border:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.24));
-  background:var(--dsw-alias-bg-layer-1,transparent);
+.dsh-notes-page{display:flex;flex-direction:column;height:100%;min-height:0;color:var(--dsw-alias-label-primary,CanvasText)}
+.dsh-notes-page-head{
+  flex:none;display:flex;align-items:center;gap:10px;
+  padding:16px 20px 12px;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.16));
 }
-.dsh-sticky-panel-head{display:flex;align-items:flex-start;gap:10px;margin-bottom:12px}
-.dsh-sticky-panel-titles{display:flex;flex-direction:column;gap:3px;flex:1;min-width:0}
-.dsh-sticky-panel-title{font-size:14px;line-height:20px;font-weight:600;color:var(--dsw-alias-label-primary,CanvasText)}
-.dsh-sticky-panel-desc{font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.9))}
-.dsh-sticky-panel-body{display:flex;flex-direction:column;gap:0}
-.dsh-sticky-row{
+.dsh-notes-page-titles{display:flex;flex-direction:column;gap:2px;flex:1;min-width:0}
+.dsh-notes-page-title{font-size:16px;line-height:22px;font-weight:600}
+.dsh-notes-page-sub{font-size:12px;line-height:17px;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.9))}
+.dsh-notes-page-body{flex:1;display:flex;min-height:0}
+.dsh-notes-rail{
+  flex:none;width:252px;box-sizing:border-box;display:flex;flex-direction:column;gap:2px;
+  padding:10px 8px;overflow:auto;border-right:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.14));
+}
+.dsh-notes-rail-label{
+  padding:8px 10px 4px;font-size:11px;line-height:16px;font-weight:600;
+  color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.9));text-transform:none;
+}
+.dsh-notes-rail-item{
+  appearance:none;display:flex;align-items:center;gap:7px;width:100%;box-sizing:border-box;
+  padding:6px 10px;border:0;border-radius:8px;background:transparent;text-align:left;
+  font:inherit;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,rgba(127,127,127,.95));
+  cursor:pointer;min-width:0;
+}
+.dsh-notes-rail-item:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.1))}
+.dsh-notes-rail-item[data-on="true"]{background:var(--dsw-alias-bg-layer-2,rgba(127,127,127,.16));color:var(--dsw-alias-label-primary,CanvasText)}
+.dsh-notes-choice[data-on="true"] .dsh-notes-rail-name::before{content:"✓ ";color:var(--dsw-alias-brand-primary,#5686fe)}
+.dsh-notes-choice .dsh-notes-rail-name::before{content:"· ";color:transparent}
+.dsh-notes-rail-item:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:-2px}
+.dsh-notes-rail-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dsh-notes-rail-count{flex:none;font-size:11px;color:var(--dsw-alias-label-dimmed,rgba(127,127,127,.8));font-variant-numeric:tabular-nums}
+.dsh-notes-rail-foot{margin-top:auto;padding:8px 6px 2px;border-top:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.14))}
+
+.dsh-notes-content{flex:1;min-width:0;display:flex;flex-direction:column;overflow:auto;padding:14px 20px 28px;gap:10px}
+.dsh-notes-group-head{display:flex;align-items:baseline;gap:8px;padding:10px 2px 4px}
+.dsh-notes-group-title{font-size:13px;line-height:18px;font-weight:600}
+.dsh-notes-group-path{font-size:11px;line-height:16px;color:var(--dsw-alias-label-dimmed,rgba(127,127,127,.8));font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+.dsh-notes-card{
+  display:flex;flex-direction:column;gap:4px;box-sizing:border-box;
+  padding:9px 12px;border-radius:10px;
+  border:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.2));
+  background:var(--dsw-alias-bg-layer-1,rgba(127,127,127,.04));
+}
+.dsh-notes-card[data-open="true"]{border-color:var(--dsw-alias-border-l2,rgba(127,127,127,.42))}
+.dsh-notes-card-main{
+  appearance:none;display:flex;align-items:flex-start;gap:8px;width:100%;box-sizing:border-box;
+  padding:0;border:0;background:transparent;text-align:left;color:inherit;font:inherit;cursor:pointer;
+}
+.dsh-notes-card-main:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:2px;border-radius:6px}
+.dsh-notes-no{
+  flex:none;min-width:26px;padding:0 5px;border-radius:6px;
+  background:var(--dsw-alias-bg-layer-2,rgba(127,127,127,.16));
+  font-size:11px;line-height:17px;text-align:center;font-variant-numeric:tabular-nums;
+  color:var(--dsw-alias-label-secondary,rgba(127,127,127,.95));
+}
+.dsh-notes-card-text{display:flex;flex-direction:column;gap:2px;flex:1;min-width:0}
+.dsh-notes-card-title{font-size:13px;line-height:19px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dsh-notes-card-preview{
+  font-size:12px;line-height:17px;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.92));
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;white-space:pre-wrap;
+}
+.dsh-notes-card-meta{flex:none;font-size:11px;line-height:16px;color:var(--dsw-alias-label-dimmed,rgba(127,127,127,.78));font-variant-numeric:tabular-nums}
+.dsh-notes-editor{display:flex;flex-direction:column;gap:8px;padding-top:4px}
+.dsh-notes-editor-foot{display:flex;align-items:center;gap:8px}
+.dsh-notes-editor-foot .dsh-notes-status{margin-right:auto}
+
+.dsh-notes-empty{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;
+  flex:1;padding:40px 20px;text-align:center;
+  color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.9));
+}
+.dsh-notes-empty-title{font-size:13px;line-height:20px;font-weight:600;color:var(--dsw-alias-label-secondary,rgba(127,127,127,.95))}
+.dsh-notes-empty-desc{font-size:12px;line-height:18px;max-width:320px}
+.dsh-notes-error{
+  display:flex;align-items:center;gap:10px;margin:10px 20px;padding:9px 12px;border-radius:9px;
+  border:1px solid rgba(229,72,77,.38);font-size:12px;line-height:17px;color:#e5484d;
+}
+.dsh-notes-banner{display:flex;align-items:center;gap:8px;font-size:11px;line-height:16px;color:var(--dsw-alias-label-dimmed,rgba(127,127,127,.8))}
+
+.dsh-notes-config{margin:4px 0;padding:14px 16px;border-radius:12px;border:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.24));background:var(--dsw-alias-bg-layer-1,transparent)}
+.dsh-notes-config-head{display:flex;flex-direction:column;gap:3px;margin-bottom:10px}
+.dsh-notes-config-title{font-size:14px;line-height:20px;font-weight:600}
+.dsh-notes-config-desc{font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.9))}
+.dsh-notes-row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:8px 0;border-top:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.16))}
+.dsh-notes-row:first-of-type{border-top:0}
+.dsh-notes-row-key{font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,rgba(127,127,127,.92))}
+.dsh-notes-row-value{font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.9));max-width:62%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+
+/* 设置面板：插件页与便签页共用 */
+.dsh-notes-settings{display:flex;flex-direction:column;gap:0}
+.dsh-notes-settings.is-compact{gap:0}
+.dsh-notes-set-row{
   display:flex;align-items:center;justify-content:space-between;gap:16px;
   padding:9px 0;border-top:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.16));
 }
-.dsh-sticky-row:first-child{border-top:0}
-.dsh-sticky-row-text{display:flex;flex-direction:column;gap:2px;min-width:0}
-.dsh-sticky-row-title{font-size:13px;line-height:20px;color:var(--dsw-alias-label-primary,CanvasText)}
-.dsh-sticky-row-desc{font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.9))}
-.dsh-sticky-row-controls{display:flex;align-items:center;gap:8px;flex:none;min-width:0;max-width:58%}
-.dsh-sticky-code{
-  min-width:0;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
-  padding:3px 6px;border-radius:6px;border:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.24));
-  background:var(--dsw-alias-bg-layer-2,rgba(127,127,127,.08));
-  font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;line-height:16px;
-  color:var(--dsw-alias-label-secondary,rgba(127,127,127,.9));
+.dsh-notes-settings.is-compact .dsh-notes-set-row{padding:7px 0}
+.dsh-notes-settings.is-compact .dsh-notes-set-row{flex-direction:column;align-items:flex-start;gap:6px}
+.dsh-notes-settings.is-compact .dsh-notes-set-control{max-width:100%}
+.dsh-notes-settings.is-compact .dsh-notes-pills{justify-content:flex-start}
+.dsh-notes-set-row:first-child{border-top:0}
+.dsh-notes-set-text{display:flex;flex-direction:column;gap:2px;min-width:0}
+.dsh-notes-set-title{font-size:13px;line-height:19px;color:var(--dsw-alias-label-primary,CanvasText)}
+.dsh-notes-set-desc{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.9))}
+.dsh-notes-set-control{flex:none;display:flex;align-items:center;gap:6px;max-width:62%}
+.dsh-notes-switch{
+  appearance:none;position:relative;flex:none;width:32px;height:18px;padding:0;border:0;border-radius:999px;
+  background:var(--dsw-alias-bg-layer-3,rgba(127,127,127,.32));cursor:pointer;transition:background .15s ease;
 }
-.dsh-sticky-btn{
-  appearance:none;flex:none;padding:4px 12px;border-radius:7px;
-  border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.4));
-  background:transparent;font:inherit;font-size:12px;line-height:18px;
-  color:var(--dsw-alias-label-secondary,rgba(127,127,127,.9));cursor:pointer;
+.dsh-notes-switch[data-on="true"]{background:var(--dsw-alias-brand-primary,#5686fe)}
+.dsh-notes-switch:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:2px}
+.dsh-notes-switch-knob{
+  position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;
+  background:#fff;transition:transform .15s ease;box-shadow:0 1px 2px rgba(0,0,0,.25);
 }
-.dsh-sticky-btn:hover{border-color:var(--dsw-alias-label-dimmed,rgba(127,127,127,.6));color:var(--dsw-alias-label-primary,CanvasText)}
-.dsh-sticky-btn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:1px}
-.dsh-sticky-help{font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.9))}
-.dsh-sticky-help summary{cursor:pointer;padding:7px 0;color:var(--dsw-alias-label-secondary,rgba(127,127,127,.92))}
-.dsh-sticky-help p{margin:4px 0 8px}
-.dsh-sticky-help code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px}
+.dsh-notes-switch[data-on="true"] .dsh-notes-switch-knob{transform:translateX(14px)}
+.dsh-notes-pills{display:flex;flex-wrap:wrap;gap:4px;justify-content:flex-end}
+.dsh-notes-pill{
+  appearance:none;padding:3px 9px;border-radius:999px;
+  border:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.28));
+  background:transparent;font:inherit;font-size:11px;line-height:16px;
+  color:var(--dsw-alias-label-secondary,rgba(127,127,127,.92));cursor:pointer;white-space:nowrap;
+}
+.dsh-notes-pill:hover{border-color:var(--dsw-alias-border-l2,rgba(127,127,127,.45));color:var(--dsw-alias-label-primary,CanvasText)}
+.dsh-notes-pill[data-on="true"]{
+  border-color:transparent;background:var(--dsw-alias-bg-layer-2,rgba(127,127,127,.18));
+  color:var(--dsw-alias-label-primary,CanvasText);font-weight:600;
+}
+.dsh-notes-pill:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:1px}
 `;
-
-    function Styles() {
-      return h("style", { "data-plugin-css": `${NS}/sticky-notes.css` }, CSS);
-    }
 
     /* ------------------------------------------------------------------ *
      * 图标
@@ -804,22 +765,23 @@ window.__ModuleLoader__.load({
     function NoteIcon({ size }) {
       return h(
         "svg",
-        { width: size, height: size, viewBox: "0 0 16 16", "aria-hidden": "true", focusable: "false", className: "dsh-sticky-icon" },
+        {
+          width: size,
+          height: size,
+          viewBox: "0 0 16 16",
+          "aria-hidden": "true",
+          focusable: "false",
+          style: { display: "block" }
+        },
         h("path", {
-          d: "M3.2 2.8h7.4l2.2 2.2v8.2H3.2z",
+          d: "M3.1 2.6h6.2l3.6 3.6v7.2H3.1z",
           fill: "none",
           stroke: "currentColor",
-          strokeWidth: 1.4,
+          strokeWidth: 1.3,
           strokeLinejoin: "round"
         }),
-        h("path", {
-          d: "M10.5 2.9v2.4h2.3",
-          fill: "none",
-          stroke: "currentColor",
-          strokeWidth: 1.4,
-          strokeLinejoin: "round"
-        }),
-        h("path", { d: "M5.3 7.3h5.4M5.3 9.8h3.8", fill: "none", stroke: "currentColor", strokeWidth: 1.4, strokeLinecap: "round" })
+        h("path", { d: "M9.2 2.7v3.5h3.5", fill: "none", stroke: "currentColor", strokeWidth: 1.3, strokeLinejoin: "round" }),
+        h("path", { d: "M5.1 8.1h5.6M5.1 10.6h3.6", fill: "none", stroke: "currentColor", strokeWidth: 1.3, strokeLinecap: "round" })
       );
     }
 
@@ -854,412 +816,251 @@ window.__ModuleLoader__.load({
       );
     }
 
-    function BackIcon({ size }) {
-      return h(
-        "svg",
-        { width: size, height: size, viewBox: "0 0 16 16", "aria-hidden": "true", focusable: "false" },
-        h("path", { d: "M9.8 3.6 5.4 8l4.4 4.4", fill: "none", stroke: "currentColor", strokeWidth: 1.6, strokeLinecap: "round", strokeLinejoin: "round" })
-      );
-    }
+    /* ------------------------------------------------------------------ *
+     * 座位 1：用量栏入口
+     * ------------------------------------------------------------------ */
+    function NotesDock(props) {
+      useLocaleWakeup();
+      const currentPrefs = usePrefs();
+      const sessionId = typeof props?.sessionId === "string" ? props.sessionId : "";
+      const visible = currentPrefs.dock !== false;
 
-    function PinIcon({ size }) {
-      return h(
-        "svg",
-        { width: size, height: size, viewBox: "0 0 16 16", "aria-hidden": "true", focusable: "false" },
-        h("path", {
-          d: "M9.7 1.9l4.4 4.4-1.3 1.3-.8-.2-2.4 2.4.2 2.3-1.2 1.2-2.5-2.5-3 3-.7-.7 3-3L3 7.9l1.2-1.2 2.3.2L9 4.5l-.2-.8z",
-          fill: "currentColor"
-        })
-      );
-    }
+      React.useEffect(() => {
+        if (!visible) return undefined;
+        if (sessionId !== "" && state.sessionId !== sessionId) publish({ sessionId });
+        void refreshGroups(sessionId);
+        const onFocus = () => void refreshGroups(sessionId);
+        window.addEventListener("focus", onFocus);
+        return () => {
+          window.removeEventListener("focus", onFocus);
+        };
+      }, [sessionId, visible]);
 
-    function TrashIcon({ size }) {
-      return h(
-        "svg",
-        { width: size, height: size, viewBox: "0 0 16 16", "aria-hidden": "true", focusable: "false" },
-        h("path", {
-          d: "M3.5 5h9M6.3 5V3.6h3.4V5M4.7 5l.5 8.1h5.6l.5-8.1M6.7 7.2v4M9.3 7.2v4",
-          fill: "none",
-          stroke: "currentColor",
-          strokeWidth: 1.3,
-          strokeLinecap: "round",
-          strokeLinejoin: "round"
-        })
-      );
-    }
+      if (!visible) return null;
 
-    function CopyIcon({ size }) {
+      const onClick = () => {
+        if (currentPrefs.click === "panel-current") {
+          openPanel("current");
+          return;
+        }
+        if (currentPrefs.click === "panel-all") {
+          openPanel("all");
+          return;
+        }
+        setQuickOpen(true);
+      };
+
       return h(
-        "svg",
-        { width: size, height: size, viewBox: "0 0 16 16", "aria-hidden": "true", focusable: "false" },
-        h("rect", { x: 5.2, y: 5.2, width: 7.2, height: 7.2, rx: 1.4, fill: "none", stroke: "currentColor", strokeWidth: 1.3 }),
-        h("path", { d: "M3.6 10.4V3.6h6.8", fill: "none", stroke: "currentColor", strokeWidth: 1.3, strokeLinecap: "round" })
+        React.Fragment,
+        null,
+        h("style", null, CSS),
+        h(
+          "button",
+          {
+            type: "button",
+            className: "dsh-notes-dock",
+            title: t("dock.tip"),
+            onClick
+          },
+          h(NoteIcon, { size: 13 }),
+          h("span", null, t("dock.label"))
+        )
       );
     }
 
     /* ------------------------------------------------------------------ *
-     * 座位 1：用量栏里的「便签」开关
+     * 座位 2：直接写一张新便签
      * ------------------------------------------------------------------ */
-    function StickyDock() {
+    function QuickNote() {
       useLocaleWakeup();
-      const currentPrefs = usePrefs();
-      const current = useStore();
-      React.useEffect(() => {
-        if (current.status === "idle") void refresh();
-      }, [current.status]);
+      const open = useQuickOpen();
+      const store = useStore();
+      const [title, setTitle] = React.useState("");
+      const [body, setBody] = React.useState("");
+      const [status, setStatus] = React.useState("idle");
+      const [error, setError] = React.useState("");
+      const bodyRef = React.useRef(null);
 
-      const count = current.status === "ready" ? current.notes.length : 0;
-      return h(
-        "button",
-        {
-          type: "button",
-          className: "dsh-sticky-dock",
-          title: translate("dock.tip"),
-          "aria-pressed": currentPrefs.open,
-          onClick: () => writePrefs({ open: !currentPrefs.open })
-        },
-        h(Styles, { key: "css" }),
-        h(NoteIcon, { size: 13, key: "icon" }),
-        h("span", { key: "label" }, translate("dock.label")),
-        count > 0 ? h("span", { className: "dsh-sticky-dock-count", key: "count" }, String(count)) : null
-      );
-    }
-
-    /* ------------------------------------------------------------------ *
-     * 座位 2：悬浮便签板
-     * ------------------------------------------------------------------ */
-    function StickyBoard() {
-      useLocaleWakeup();
-      const currentPrefs = usePrefs();
-      const current = useStore();
-      const open = currentPrefs.open;
-
-      const [pos, setPos] = React.useState(() => (currentPrefs.pos === null ? defaultPos() : clampPos(currentPrefs.pos)));
-      const drag = React.useRef(null);
-      const boardRef = React.useRef(null);
-
-      const [mode, setMode] = React.useState("list");
-      const [draft, setDraft] = React.useState(null);
-      const [saveStatus, setSaveStatus] = React.useState("idle");
-      const [saveError, setSaveError] = React.useState(null);
-      const [conflict, setConflict] = React.useState(null);
-      const [confirmDelete, setConfirmDelete] = React.useState(false);
-
-      const draftRef = React.useRef(null);
-      const baselineRef = React.useRef("");
-      const editorToken = React.useRef(0);
-      const saveTimer = React.useRef(0);
-      const saveChain = React.useRef(Promise.resolve());
-      const titleRef = React.useRef(null);
-
-      const setDraftBoth = (next) => {
-        draftRef.current = next;
-        setDraft(next);
-      };
-
-      const closeEditor = () => {
-        editorToken.current += 1;
-        if (saveTimer.current) {
-          window.clearTimeout(saveTimer.current);
-          saveTimer.current = 0;
-        }
-        setMode("list");
-        setDraftBoth(null);
-        baselineRef.current = "";
-        setSaveStatus("idle");
-        setSaveError(null);
-        setConflict(null);
-        setConfirmDelete(false);
-      };
-
-      const openEditor = (note) => {
-        editorToken.current += 1;
-        if (saveTimer.current) {
-          window.clearTimeout(saveTimer.current);
-          saveTimer.current = 0;
-        }
-        const next = note === null ? emptyDraft() : draftOf(note);
-        setDraftBoth(next);
-        baselineRef.current = draftKey(next);
-        setMode("edit");
-        setSaveStatus("idle");
-        setSaveError(null);
-        setConflict(null);
-        setConfirmDelete(false);
-      };
-
-      const schedulePersist = () => {
-        if (saveTimer.current) window.clearTimeout(saveTimer.current);
-        saveTimer.current = window.setTimeout(() => {
-          saveTimer.current = 0;
-          const latest = draftRef.current;
-          if (latest !== null) void persist(latest, editorToken.current);
-        }, SAVE_DELAY);
-      };
-
-      const updateDraft = (patch) => {
-        const latest = draftRef.current;
-        if (latest === null) return;
-        const next = { ...latest, ...patch };
-        setDraftBoth(next);
-        setConfirmDelete(false);
-        if (draftKey(next) === baselineRef.current) {
-          setSaveStatus("saved");
-          if (saveTimer.current) {
-            window.clearTimeout(saveTimer.current);
-            saveTimer.current = 0;
-          }
-          return;
-        }
-        setSaveStatus("dirty");
-        setConflict(null);
-        setSaveError(null);
-        schedulePersist();
-      };
-
-      async function persist(candidate, token) {
-        if (candidate === null || candidate === undefined) return false;
-        if (candidate.id === null && candidate.title.trim() === "" && candidate.body.trim() === "") return false;
-        const openedFor = token ?? editorToken.current;
-        const run = saveChain.current.then(
-          () => doSave(candidate, openedFor),
-          () => doSave(candidate, openedFor)
-        );
-        saveChain.current = run.then(
-          () => undefined,
-          () => undefined
-        );
-        return run;
-      }
-
-      async function doSave(candidate, token) {
-        if (token !== editorToken.current) return false;
-        if (api === null) {
-          setSaveError({ code: "sticky/offline", message: "", details: {} });
-          setSaveStatus("error");
-          return false;
-        }
-        const latest = draftRef.current;
-        if (latest === null) return false;
-        setSaveStatus("saving");
-        setSaveError(null);
-        try {
-          const payload = {
-            id: latest.id,
-            title: candidate.title,
-            body: candidate.body,
-            color: candidate.color,
-            pinned: candidate.pinned,
-            baseRev: latest.id === null ? null : latest.rev
-          };
-          const result = await api.save(payload);
-          localMutations += 1;
-          if (isRecord(result) && Array.isArray(result.notes)) {
-            publish({
-              status: "ready",
-              notes: result.notes,
-              revision: typeof result.revision === "string" ? result.revision : store.revision,
-              path: typeof result.path === "string" ? result.path : store.path,
-              displayPath: typeof result.displayPath === "string" ? result.displayPath : store.displayPath,
-              exists: true,
-              loadedAt: Date.now(),
-              error: null
-            });
-          }
-          if (token !== editorToken.current) return true;
-
-          const savedKey = draftKey(candidate);
-          baselineRef.current = savedKey;
-          const currentDraft = draftRef.current;
-          if (currentDraft !== null && isRecord(result?.note)) {
-            const merged = {
-              ...currentDraft,
-              id: result.note.id,
-              rev: result.note.rev,
-              createdAt: result.note.createdAt,
-              updatedAt: result.note.updatedAt
-            };
-            setDraftBoth(merged);
-            if (draftKey(merged) !== savedKey) {
-              setSaveStatus("dirty");
-              schedulePersist();
-            } else {
-              setSaveStatus("saved");
-            }
-          } else {
-            setSaveStatus("saved");
-          }
-          setSaveError(null);
-          setConflict(null);
-          return true;
-        } catch (error) {
-          if (token !== editorToken.current) return false;
-          const failure = toClientError(error);
-          if (failure.code === "sticky/conflict") {
-            setConflict(isRecord(failure.details?.current) ? failure.details.current : null);
-            setSaveStatus("conflict");
-            void refresh({ quiet: true });
-          } else {
-            setSaveError(failure);
-            setSaveStatus("error");
-          }
-          return false;
-        }
-      }
-
-      const flush = () => {
-        if (saveTimer.current) {
-          window.clearTimeout(saveTimer.current);
-          saveTimer.current = 0;
-        }
-        const latest = draftRef.current;
-        if (latest !== null && draftKey(latest) !== baselineRef.current) {
-          void persist(latest);
-        }
-      };
-
-      const handleBack = async () => {
-        const latest = draftRef.current;
-        if (latest === null) {
-          closeEditor();
-          return;
-        }
-        if (latest.id === null && latest.title.trim() === "" && latest.body.trim() === "") {
-          closeEditor();
-          return;
-        }
-        if (saveTimer.current) {
-          window.clearTimeout(saveTimer.current);
-          saveTimer.current = 0;
-        }
-        if (draftKey(latest) !== baselineRef.current) {
-          const saved = await persist(latest);
-          if (!saved) return;
-        }
-        closeEditor();
-      };
-
-      const overwrite = () => {
-        const latest = draftRef.current;
-        if (latest === null) return;
-        const rev = isRecord(conflict) && Number.isInteger(conflict.rev) ? conflict.rev : null;
-        const next = { ...latest, rev };
-        setDraftBoth(next);
-        setConflict(null);
-        setSaveStatus("dirty");
-        void persist(next);
-      };
-
-      const discard = () => {
-        const latest = draftRef.current;
-        if (latest === null) {
-          closeEditor();
-          return;
-        }
-        const note = latest.id === null ? null : current.notes.find((candidate) => candidate.id === latest.id);
-        if (note === undefined || note === null) closeEditor();
-        else openEditor(note);
-      };
-
-      const handleDelete = async () => {
-        const latest = draftRef.current;
-        if (latest === null) return;
-        if (latest.id === null) {
-          closeEditor();
-          return;
-        }
-        if (api === null) {
-          setSaveError({ code: "sticky/offline", message: "", details: {} });
-          setSaveStatus("error");
-          return;
-        }
-        try {
-          const result = await api.remove(latest.id, latest.rev);
-          localMutations += 1;
-          if (isRecord(result) && Array.isArray(result.notes)) {
-            publish({
-              status: "ready",
-              notes: result.notes,
-              revision: typeof result.revision === "string" ? result.revision : store.revision,
-              path: typeof result.path === "string" ? result.path : store.path,
-              displayPath: typeof result.displayPath === "string" ? result.displayPath : store.displayPath,
-              exists: true,
-              loadedAt: Date.now(),
-              error: null
-            });
-          }
-          closeEditor();
-        } catch (error) {
-          const failure = toClientError(error);
-          if (failure.code === "sticky/conflict") {
-            setConflict(isRecord(failure.details?.current) ? failure.details.current : null);
-            setSaveStatus("conflict");
-          } else {
-            setSaveError(failure);
-            setSaveStatus("error");
-          }
-          void refresh({ quiet: true });
-        }
-      };
-
-      const copyPath = async () => {
-        const text = store.path || store.displayPath;
-        if (text === "") return;
-        try {
-          await navigator.clipboard.writeText(text);
-        } catch {
-          /* 没有剪贴板权限就不提示成功 */
-        }
-      };
-
-      // 位置：拖动只在松手时写偏好；窗口尺寸变了收回视野。
-      const posKey = currentPrefs.pos === null ? "" : `${currentPrefs.pos.x},${currentPrefs.pos.y}`;
-      React.useLayoutEffect(() => {
-        if (currentPrefs.pos !== null) setPos(clampPos(currentPrefs.pos));
-      }, [posKey]);
-
-      React.useEffect(() => {
-        const onResize = () => setPos((previous) => clampPos(previous));
-        window.addEventListener("resize", onResize);
-        return () => window.removeEventListener("resize", onResize);
-      }, []);
+      // 拿不到会话工作区时不要拿「上次记住的工作区」兜底写——那会写进别的工作区。
+      const workspace = store.currentLive === true ? store.current : "";
+      const workspaceTitle = store.currentTitle !== "" ? store.currentTitle : shortPath(workspace);
 
       React.useEffect(() => {
         if (!open) return undefined;
-        void refresh({ quiet: current.status === "ready" });
-        const timer = window.setInterval(() => {
-          if (typeof document !== "undefined" && document.hidden) return;
-          void refresh({ quiet: true });
-        }, 10000);
-        const onFocus = () => void refresh({ quiet: true });
-        window.addEventListener("focus", onFocus);
+        setTitle("");
+        setBody("");
+        setStatus("idle");
+        setError("");
+        const timer = window.setTimeout(() => bodyRef.current?.focus?.(), 30);
+        const onKey = (event) => {
+          if (event.key === "Escape") {
+            event.stopPropagation();
+            setQuickOpen(false);
+          }
+          if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+            event.preventDefault();
+            void submit();
+          }
+        };
+        window.addEventListener("keydown", onKey, true);
         return () => {
-          window.clearInterval(timer);
-          window.removeEventListener("focus", onFocus);
+          window.clearTimeout(timer);
+          window.removeEventListener("keydown", onKey, true);
         };
       }, [open]);
 
-      React.useEffect(() => {
-        if (!open) return undefined;
-        const onKey = (event) => {
-          if (event.key !== "Escape") return;
-          if (mode === "edit") {
-            event.preventDefault();
-            void handleBack();
-          } else {
-            writePrefs({ open: false });
-          }
-        };
-        window.addEventListener("keydown", onKey);
-        return () => window.removeEventListener("keydown", onKey);
-      }, [open, mode, handleBack]);
-
-      // 新便签进入编辑后把光标放到标题。
-      React.useEffect(() => {
-        if (mode === "edit" && draft !== null && draft.id === null && titleRef.current !== null) {
-          titleRef.current.focus();
+      async function submit() {
+        if (status === "saving") return;
+        if (title.trim() === "" && body.trim() === "") {
+          setStatus("error");
+          setError(t("quick.empty"));
+          return;
         }
-      }, [mode, draft === null ? null : draft.id]);
+        setStatus("saving");
+        setError("");
+        try {
+          await saveNote(workspace, { title, body });
+          setStatus("idle");
+          setQuickOpen(false);
+        } catch (failure) {
+          setStatus("error");
+          setError(failure?.message !== undefined && failure.message !== "" ? failure.message : t("quick.failed"));
+        }
+      }
+
+      if (!open) return null;
+
+      if (workspace === "") {
+        return h(
+          "div",
+          { className: "dsh-notes-quick", role: "dialog", "aria-label": t("quick.title") },
+          h("style", null, CSS),
+          h(
+            "div",
+            { className: "dsh-notes-quick-head" },
+            h("span", { className: "dsh-notes-mark" }, h(NoteIcon, { size: 14 })),
+            h("span", { className: "dsh-notes-quick-title" }, t("quick.title")),
+            h(
+              "button",
+              {
+                type: "button",
+                className: "dsh-notes-dock",
+                title: t("quick.cancel"),
+                "aria-label": t("quick.cancel"),
+                onClick: () => setQuickOpen(false)
+              },
+              h(CloseIcon, { size: 14 })
+            )
+          ),
+          h("div", { className: "dsh-notes-quick-where" }, t("quick.noWorkspace")),
+          h("div", { className: "dsh-notes-quick-foot" }, h("span", { className: "dsh-notes-status" }, ""))
+        );
+      }
+
+      return h(
+        "div",
+        { className: "dsh-notes-quick", role: "dialog", "aria-label": t("quick.title") },
+        h("style", null, CSS),
+        h(
+          "div",
+          { className: "dsh-notes-quick-head" },
+          h("span", { className: "dsh-notes-mark" }, h(NoteIcon, { size: 14 })),
+          h("span", { className: "dsh-notes-quick-title" }, t("quick.title")),
+          h(
+            "button",
+            {
+              type: "button",
+              className: "dsh-notes-dock",
+              title: t("quick.cancel"),
+              "aria-label": t("quick.cancel"),
+              onClick: () => setQuickOpen(false)
+            },
+            h(CloseIcon, { size: 14 })
+          )
+        ),
+        h("div", { className: "dsh-notes-quick-where" }, `${t("quick.workspace")} ${workspaceTitle}`),
+        h(
+          "div",
+          { className: "dsh-notes-quick-body" },
+          h("input", {
+            className: "dsh-notes-input",
+            value: title,
+            placeholder: t("quick.heading"),
+            "aria-label": t("quick.heading"),
+            onChange: (event) => setTitle(event.target.value)
+          }),
+          h("textarea", {
+            ref: bodyRef,
+            className: "dsh-notes-textarea",
+            value: body,
+            placeholder: t("quick.body"),
+            "aria-label": t("quick.body"),
+            onChange: (event) => setBody(event.target.value)
+          })
+        ),
+        h(
+          "div",
+          { className: "dsh-notes-quick-foot" },
+          h("span", { className: "dsh-notes-status", "data-kind": status === "error" ? "error" : undefined }, error === "" ? "" : error),
+          h(
+            "button",
+            { type: "button", className: "dsh-notes-btn", "data-kind": "ghost", onClick: () => setQuickOpen(false) },
+            t("quick.cancel")
+          ),
+          h(
+            "button",
+            { type: "button", className: "dsh-notes-btn", disabled: status === "saving", onClick: () => void submit() },
+            status === "saving" ? t("quick.saving") : t("quick.save")
+          )
+        )
+      );
+    }
+
+    /* ------------------------------------------------------------------ *
+     * 座位 3：侧栏图标 + 独立便签页
+     * ------------------------------------------------------------------ */
+    function PanelIcon({ size, active }) {
+      return h(
+        "span",
+        { style: { display: "inline-flex", color: active ? "var(--dsw-alias-brand-primary,#5686fe)" : "currentColor" } },
+        h(NoteIcon, { size: size ?? 16 })
+      );
+    }
+
+    function NoteCard({ note, workspace, open, onToggle }) {
+      const [draftTitle, setDraftTitle] = React.useState(note.title);
+      const [draftBody, setDraftBody] = React.useState(note.body);
+      const [status, setStatus] = React.useState("idle");
+      const [error, setError] = React.useState("");
+      const [confirmDelete, setConfirmDelete] = React.useState(false);
+      const [conflict, setConflict] = React.useState(false);
+      const currentPrefs = usePrefs();
+      const needConfirm = currentPrefs.confirmDelete !== false;
+
+      // 记住「这张草稿是从哪个 rev 开始写的」。同一张便签在别处被追加过（rev 变了）而本地
+      // 还有没保存的字时，不清草稿，转成冲突提示让人自己选：载入最新，或覆盖保存。
+      const loadedRef = React.useRef({ no: 0, rev: -1 });
+
+      React.useEffect(() => {
+        if (!open) {
+          loadedRef.current = { no: 0, rev: -1 };
+          return;
+        }
+        const dirtyNow = draftTitle !== note.title || draftBody !== note.body;
+        const sameNote = loadedRef.current.no === note.no;
+        if (sameNote && loadedRef.current.rev !== note.rev && dirtyNow) {
+          setConflict(true);
+          setError(t("page.conflict"));
+          return;
+        }
+        loadedRef.current = { no: note.no, rev: note.rev };
+        setDraftTitle(note.title);
+        setDraftBody(note.body);
+        setStatus("idle");
+        setError("");
+        setConfirmDelete(false);
+        setConflict(false);
+      }, [open, note.rev, note.no]);
 
       React.useEffect(() => {
         if (!confirmDelete) return undefined;
@@ -1267,528 +1068,667 @@ window.__ModuleLoader__.load({
         return () => window.clearTimeout(timer);
       }, [confirmDelete]);
 
-      React.useEffect(() => () => {
-        if (saveTimer.current) window.clearTimeout(saveTimer.current);
-      }, []);
+      const dirty = open && (draftTitle !== note.title || draftBody !== note.body);
 
-      const onPointerDown = (event) => {
-        if (event.button !== 0) return;
-        if (event.target instanceof Element && event.target.closest("button")) return;
-        const rect = event.currentTarget.getBoundingClientRect();
-        drag.current = {
-          pointerId: event.pointerId,
-          offsetX: event.clientX - rect.left,
-          offsetY: event.clientY - rect.top,
-          startX: event.clientX,
-          startY: event.clientY,
-          moved: false
-        };
+      async function save() {
+        if (status === "saving") return;
+        setStatus("saving");
+        setError("");
         try {
-          event.currentTarget.setPointerCapture(event.pointerId);
-        } catch {
-          /* 没有指针捕获也能拖 */
+          const payload = { no: note.no, title: draftTitle, body: draftBody };
+          // 冲突后这一次就是「以我为准」：不再带 baseRev，否则永远存不进去。
+          if (!conflict) payload.baseRev = note.rev;
+          await saveNote(workspace, payload);
+          setStatus("saved");
+          setConflict(false);
+        } catch (failure) {
+          setStatus("error");
+          if (failure?.code === "sticky/conflict") {
+            setConflict(true);
+            setError(t("page.conflict"));
+            return;
+          }
+          setError(failure?.message !== undefined && failure.message !== "" ? failure.message : t("page.saveFailed"));
+        }
+      }
+
+      async function reloadFromHost() {
+        setConflict(false);
+        setError("");
+        await loadNotes(workspace);
+      }
+
+      async function remove() {
+        // 设置里关掉「删除前确认」后，点一次就真的删。
+        if (needConfirm && !confirmDelete) {
+          setConfirmDelete(true);
+          return;
+        }
+        try {
+          // 冲突后再点一次删除就是「不管它改没改，删掉」。
+          await removeNote(workspace, note.no, conflict ? null : note.rev);
+        } catch (failure) {
+          setStatus("error");
+          if (failure?.code === "sticky/conflict") {
+            setConflict(true);
+            setError(t("page.deleteConflict"));
+            setConfirmDelete(true);
+            return;
+          }
+          setError(failure?.message !== undefined && failure.message !== "" ? failure.message : t("page.saveFailed"));
+        }
+      }
+
+      const onKey = (event) => {
+        if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+          event.preventDefault();
+          void save();
         }
       };
 
-      const onPointerMove = (event) => {
-        const currentDrag = drag.current;
-        if (currentDrag === null || currentDrag.pointerId !== event.pointerId) return;
-        const dx = event.clientX - currentDrag.startX;
-        const dy = event.clientY - currentDrag.startY;
-        if (!currentDrag.moved && Math.abs(dx) + Math.abs(dy) < 4) return;
-        currentDrag.moved = true;
-        setPos(clampPos({ x: event.clientX - currentDrag.offsetX, y: event.clientY - currentDrag.offsetY }));
-      };
-
-      const onPointerUp = (event) => {
-        const currentDrag = drag.current;
-        if (currentDrag === null || currentDrag.pointerId !== event.pointerId) return;
-        drag.current = null;
-        if (!currentDrag.moved) return;
-        writePrefs({ pos: clampPos({ x: event.clientX - currentDrag.offsetX, y: event.clientY - currentDrag.offsetY }) });
-      };
-
-      if (!open) return null;
-
-      const notes = orderNotes(current.notes);
-      const statusText = saveLabel(saveStatus);
-      const pathText = current.displayPath || current.path;
-
-      const banner = (() => {
-        if (current.status === "error" || current.status === "offline") {
-          return h(
-            "div",
-            { className: "dsh-sticky-banner", "data-kind": "error", key: "load-error" },
-            h("span", null, errorText(current.error)),
-            h(
+      return h(
+        "div",
+        { className: "dsh-notes-card", "data-open": open ? "true" : "false" },
+        h(
+          "button",
+          {
+            type: "button",
+            className: "dsh-notes-card-main",
+            onClick: () => onToggle(note.no),
+            "aria-expanded": open ? "true" : "false"
+          },
+          h("span", { className: "dsh-notes-no", title: t("page.copyNo", { n: note.no }) }, `#${note.no}`),
+          h(
+            "span",
+            { className: "dsh-notes-card-text" },
+            h("span", { className: "dsh-notes-card-title" }, note.title === "" ? t("page.untitled") : note.title),
+            note.body === "" ? null : h("span", { className: "dsh-notes-card-preview" }, previewOf(note.body, 180))
+          ),
+          h("span", { className: "dsh-notes-card-meta" }, note.updatedAt === "" ? "" : timeAgo(note.updatedAt))
+        ),
+        open
+          ? h(
               "div",
-              { className: "dsh-sticky-banner-actions" },
-              h("button", { type: "button", className: "dsh-sticky-mini", onClick: () => void refresh() }, translate("board.retry"))
-            )
-          );
-        }
-        return null;
-      })();
-
-      const listBody =
-        current.status === "loading" || current.status === "idle"
-          ? h("div", { className: "dsh-sticky-empty", key: "loading" }, h("div", { className: "dsh-sticky-empty-desc" }, translate("board.loading")))
-          : notes.length === 0
-            ? h(
-                "div",
-                { className: "dsh-sticky-empty", key: "empty" },
-                h(NoteIcon, { size: 26 }),
-                h("div", { className: "dsh-sticky-empty-title" }, translate("board.empty")),
-                h("div", { className: "dsh-sticky-empty-desc" }, translate("board.emptyHint"))
-              )
-            : notes.map((note) =>
-                h(
-                  "button",
-                  {
-                    key: note.id,
-                    type: "button",
-                    className: "dsh-sticky-card",
-                    "data-color": note.color,
-                    title: note.title,
-                    "aria-label": tf("board.noteAria", { title: note.title || translate("board.untitled") }),
-                    onClick: () => openEditor(note)
-                  },
-                  h(
-                    "span",
-                    { className: "dsh-sticky-card-title" },
-                    note.title || translate("board.untitled")
-                  ),
-                  note.body ? h("span", { className: "dsh-sticky-card-preview" }, previewOf(note.body, 120)) : null,
-                  h(
-                    "span",
-                    { className: "dsh-sticky-card-meta" },
-                    note.pinned === true ? h(PinIcon, { size: 10, key: "pin" }) : null,
-                    h("span", { key: "time" }, relativeTime(note.updatedAt, Date.now(), tf))
-                  )
-                )
-              );
-
-      const editor =
-        draft === null
-          ? null
-          : h(
-              "div",
-              { className: "dsh-sticky-editor", key: "editor" },
-              h(
-                "div",
-                { className: "dsh-sticky-editor-bar" },
-                h(
-                  "button",
-                  { type: "button", className: "dsh-sticky-ghost", onClick: () => void handleBack() },
-                  h(BackIcon, { size: 13 }),
-                  h("span", null, translate("board.back"))
-                ),
-                h("span", { className: "dsh-sticky-save", "data-state": saveStatus }, statusText)
-              ),
+              { className: "dsh-notes-editor" },
               h("input", {
-                ref: titleRef,
-                className: "dsh-sticky-input",
-                type: "text",
-                value: draft.title,
-                maxLength: 200,
-                placeholder: translate("board.titlePlaceholder"),
-                "aria-label": translate("board.titlePlaceholder"),
-                onChange: (event) => updateDraft({ title: event.target.value }),
-                onBlur: flush
+                className: "dsh-notes-input",
+                value: draftTitle,
+                placeholder: t("page.titlePlaceholder"),
+                onChange: (event) => setDraftTitle(event.target.value),
+                onKeyDown: onKey
               }),
               h("textarea", {
-                className: "dsh-sticky-textarea",
-                value: draft.body,
-                maxLength: 20000,
-                placeholder: translate("board.bodyPlaceholder"),
-                "aria-label": translate("board.bodyPlaceholder"),
-                onChange: (event) => updateDraft({ body: event.target.value }),
-                onBlur: flush
+                className: "dsh-notes-textarea",
+                value: draftBody,
+                style: { minHeight: "180px" },
+                placeholder: t("page.bodyPlaceholder"),
+                onChange: (event) => setDraftBody(event.target.value),
+                onKeyDown: onKey
               }),
               h(
                 "div",
-                { className: "dsh-sticky-tools" },
+                { className: "dsh-notes-editor-foot" },
                 h(
-                  "div",
-                  { className: "dsh-sticky-colors", role: "group", "aria-label": translate("board.color") },
-                  COLORS.map((color) =>
-                    h("button", {
-                      key: color,
-                      type: "button",
-                      className: "dsh-sticky-swatch",
-                      "data-color": color,
-                      "data-on": draft.color === color,
-                      title: translate(`color.${color}`),
-                      "aria-label": translate(`color.${color}`),
-                      "aria-pressed": draft.color === color,
-                      onClick: () => updateDraft({ color })
-                    })
-                  )
+                  "span",
+                  { className: "dsh-notes-status", "data-kind": status === "error" ? "error" : undefined },
+                  error !== "" ? error : dirty ? "" : status === "saved" ? t("page.saved") : ""
+                ),
+                h(
+                  "button",
+                  { type: "button", className: "dsh-notes-btn", "data-kind": "ghost", onClick: () => onToggle(note.no) },
+                  t("page.close")
                 ),
                 h(
                   "button",
                   {
                     type: "button",
-                    className: "dsh-sticky-chip",
-                    "data-on": draft.pinned === true,
-                    "aria-pressed": draft.pinned === true,
-                    onClick: () => updateDraft({ pinned: draft.pinned !== true })
+                    className: "dsh-notes-btn",
+                    "data-kind": "danger",
+                    "data-confirm": confirmDelete ? "true" : "false",
+                    onClick: () => void remove()
                   },
-                  h(PinIcon, { size: 11 }),
-                  h("span", null, draft.pinned === true ? translate("board.unpin") : translate("board.pin"))
-                )
-              ),
-              saveStatus === "conflict"
-                ? h(
-                    "div",
-                    { className: "dsh-sticky-banner", "data-kind": "warn" },
-                    h("span", null, translate("board.conflictDesc")),
-                    h(
-                      "div",
-                      { className: "dsh-sticky-banner-actions" },
-                      h("button", { type: "button", className: "dsh-sticky-mini", onClick: overwrite }, translate("board.overwrite")),
-                      h("button", { type: "button", className: "dsh-sticky-mini", onClick: discard }, translate("board.discard"))
-                    )
-                  )
-                : null,
-              saveStatus === "error" && saveError !== null
-                ? h(
-                    "div",
-                    { className: "dsh-sticky-banner", "data-kind": "error" },
-                    h("span", null, errorText(saveError)),
-                    h(
-                      "div",
-                      { className: "dsh-sticky-banner-actions" },
-                      h(
-                        "button",
-                        { type: "button", className: "dsh-sticky-mini", onClick: () => void persist(draftRef.current) },
-                        translate("board.retry")
-                      )
-                    )
-                  )
-                : null,
-              h(
-                "div",
-                { className: "dsh-sticky-foot" },
-                h(
-                  "button",
-                  {
-                    type: "button",
-                    className: "dsh-sticky-danger",
-                    "data-confirm": confirmDelete,
-                    onClick: () => {
-                      if (!confirmDelete) {
-                        setConfirmDelete(true);
-                        return;
-                      }
-                      void handleDelete();
-                    }
-                  },
-                  h(TrashIcon, { size: 12 }),
-                  h("span", null, confirmDelete ? translate("board.deleteConfirm") : translate("board.delete"))
+                  confirmDelete ? t("page.deleteConfirm") : t("page.delete")
                 ),
-                draft.updatedAt
+                conflict
                   ? h(
-                      "span",
-                      { className: "dsh-sticky-stamp" },
-                      `${translate("board.updated")} ${relativeTime(draft.updatedAt, Date.now(), tf)}`
+                      "button",
+                      { type: "button", className: "dsh-notes-btn", "data-kind": "ghost", onClick: () => void reloadFromHost() },
+                      t("page.reload")
                     )
-                  : null
+                  : null,
+                h(
+                  "button",
+                  { type: "button", className: "dsh-notes-btn", disabled: !dirty || status === "saving", onClick: () => void save() },
+                  status === "saving" ? t("page.saving") : conflict ? t("page.overwrite") : t("page.save")
+                )
               )
-            );
+            )
+          : null
+      );
+    }
+
+    function Composer({ workspace, onSaved }) {
+      const [title, setTitle] = React.useState("");
+      const [body, setBody] = React.useState("");
+      const [status, setStatus] = React.useState("idle");
+      const [error, setError] = React.useState("");
+      const bodyRef = React.useRef(null);
+
+      React.useEffect(() => {
+        const timer = window.setTimeout(() => bodyRef.current?.focus?.(), 30);
+        return () => window.clearTimeout(timer);
+      }, []);
+
+      async function save() {
+        if (status === "saving") return;
+        if (title.trim() === "" && body.trim() === "") {
+          setStatus("error");
+          setError(t("quick.empty"));
+          return;
+        }
+        setStatus("saving");
+        setError("");
+        try {
+          await saveNote(workspace, { title, body });
+          setTitle("");
+          setBody("");
+          setStatus("idle");
+          onSaved?.();
+        } catch (failure) {
+          setStatus("error");
+          setError(failure?.message !== undefined && failure.message !== "" ? failure.message : t("quick.failed"));
+        }
+      }
+
+      const onKey = (event) => {
+        if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+          event.preventDefault();
+          void save();
+        }
+      };
 
       return h(
         "div",
-        {
-          ref: boardRef,
-          className: "dsh-sticky-board",
-          role: "dialog",
-          "aria-label": translate("board.title"),
-          style: { left: `${pos.x}px`, top: `${pos.y}px` }
-        },
-        h(Styles, { key: "css" }),
+        { className: "dsh-notes-card", "data-open": "true" },
         h(
           "div",
-          {
-            className: "dsh-sticky-head",
-            key: "head",
-            onPointerDown,
-            onPointerMove,
-            onPointerUp,
-            onPointerCancel: onPointerUp,
-            onDoubleClick: (event) => {
-              if (event.target instanceof Element && event.target.closest("button")) return;
-              writePrefs({ open: false });
-            }
-          },
-          h("span", { className: "dsh-sticky-mark" }, h(NoteIcon, { size: 15 })),
+          { className: "dsh-notes-editor" },
+          h("input", {
+            className: "dsh-notes-input",
+            value: title,
+            placeholder: t("quick.heading"),
+            onChange: (event) => setTitle(event.target.value),
+            onKeyDown: onKey
+          }),
+          h("textarea", {
+            ref: bodyRef,
+            className: "dsh-notes-textarea",
+            value: body,
+            placeholder: t("quick.body"),
+            onChange: (event) => setBody(event.target.value),
+            onKeyDown: onKey
+          }),
           h(
             "div",
-            { className: "dsh-sticky-heading" },
-            h("span", { className: "dsh-sticky-title" }, translate("board.title")),
+            { className: "dsh-notes-editor-foot" },
             h(
               "span",
-              { className: "dsh-sticky-sub" },
-              current.status === "ready" ? tf("board.count", { n: current.notes.length }) : pathText || translate("board.loading")
+              { className: "dsh-notes-status", "data-kind": status === "error" ? "error" : undefined },
+              error
+            ),
+            h(
+              "button",
+              { type: "button", className: "dsh-notes-btn", disabled: status === "saving", onClick: () => void save() },
+              status === "saving" ? t("quick.saving") : t("quick.save")
             )
-          ),
+          )
+        )
+      );
+    }
+
+    function SwitchRow({ title, desc, on, onToggle }) {
+      return h(
+        "div",
+        { className: "dsh-notes-set-row" },
+        h(
+          "div",
+          { className: "dsh-notes-set-text" },
+          h("span", { className: "dsh-notes-set-title" }, title),
+          desc === "" ? null : h("span", { className: "dsh-notes-set-desc" }, desc)
+        ),
+        h(
+          "button",
+          {
+            type: "button",
+            role: "switch",
+            "aria-checked": on ? "true" : "false",
+            "aria-label": title,
+            className: "dsh-notes-switch",
+            "data-on": on ? "true" : "false",
+            onClick: onToggle
+          },
+          h("span", { className: "dsh-notes-switch-knob" })
+        )
+      );
+    }
+
+    function ChoiceRow({ title, desc, value, options, onChange }) {
+      return h(
+        "div",
+        { className: "dsh-notes-set-row" },
+        h(
+          "div",
+          { className: "dsh-notes-set-text" },
+          h("span", { className: "dsh-notes-set-title" }, title),
+          desc === "" ? null : h("span", { className: "dsh-notes-set-desc" }, desc)
+        ),
+        h(
+          "div",
+          { className: "dsh-notes-set-control" },
           h(
             "div",
-            { className: "dsh-sticky-head-actions" },
-            mode === "list"
-              ? h(
+            { className: "dsh-notes-pills", role: "radiogroup", "aria-label": title },
+            options.map((option) =>
+              h(
+                "button",
+                {
+                  key: option.value,
+                  type: "button",
+                  role: "radio",
+                  "aria-checked": value === option.value ? "true" : "false",
+                  className: "dsh-notes-pill",
+                  "data-on": value === option.value ? "true" : "false",
+                  onClick: () => onChange(option.value)
+                },
+                option.label
+              )
+            )
+          )
+        )
+      );
+    }
+
+    /** 插件页和便签页共用同一套设置；改一处，两边立刻同步（localStorage 单一真相）。 */
+    function SettingsPanel({ compact }) {
+      useLocaleWakeup();
+      const prefs = usePrefs();
+      return h(
+        "div",
+        { className: compact ? "dsh-notes-settings is-compact" : "dsh-notes-settings" },
+        h("style", null, CSS),
+        h(SwitchRow, {
+          title: t("set.dock"),
+          desc: t("set.dock.desc"),
+          on: prefs.dock !== false,
+          onToggle: () => writePrefs({ dock: prefs.dock === false })
+        }),
+        h(ChoiceRow, {
+          title: t("set.click"),
+          desc: t("set.click.desc"),
+          value: prefs.click,
+          options: [
+            { value: "quick", label: t("page.click.quick") },
+            { value: "panel-current", label: t("page.click.panelCurrent") },
+            { value: "panel-all", label: t("page.click.panelAll") }
+          ],
+          onChange: (value) => writePrefs({ click: value })
+        }),
+        h(ChoiceRow, {
+          title: t("set.view"),
+          desc: t("set.view.desc"),
+          value: prefs.defaultView,
+          options: [
+            { value: "current", label: t("set.view.current") },
+            { value: "all", label: t("set.view.all") }
+          ],
+          onChange: (value) => writePrefs({ defaultView: value })
+        }),
+        h(SwitchRow, {
+          title: t("set.autoRefresh"),
+          desc: t("set.autoRefresh.desc"),
+          on: prefs.autoRefresh !== false,
+          onToggle: () => writePrefs({ autoRefresh: prefs.autoRefresh === false })
+        }),
+        h(SwitchRow, {
+          title: t("set.confirmDelete"),
+          desc: t("set.confirmDelete.desc"),
+          on: prefs.confirmDelete !== false,
+          onToggle: () => writePrefs({ confirmDelete: prefs.confirmDelete === false })
+        })
+      );
+    }
+
+    function NotesPage() {
+      useLocaleWakeup();
+      const store = useStore();
+      const currentPrefs = usePrefs();
+      const [openNo, setOpenNo] = React.useState(0);
+      const [composing, setComposing] = React.useState(false);
+      const [showSettings, setShowSettings] = React.useState(false);
+
+      React.useEffect(() => {
+        state.editing = openNo !== 0 || composing;
+        return () => {
+          state.editing = false;
+        };
+      }, [openNo, composing]);
+
+      React.useEffect(() => {
+        void refreshGroups("").then(() => {
+          if (currentPrefs.defaultView === "all" && state.selected !== "*") void loadAll();
+        });
+      }, []);
+
+      React.useEffect(() => {
+        // 关掉「自动刷新」后就不轮询：AI 追加进来的内容要点一次「刷新」才出现。
+        if (currentPrefs.autoRefresh === false) return undefined;
+        const visible = () => {
+          if (document.visibilityState !== "visible") return false;
+          const page = document.querySelector(".dsh-notes-page");
+          return page === null || typeof page.checkVisibility !== "function" || page.checkVisibility();
+        };
+        const timer = window.setInterval(() => {
+          if (!visible()) return;
+          if (state.editing) return;
+          if (state.selected !== "" && state.selected !== "*") {
+            void call("notes", { workspace: state.selected }).then((group) => upsertGroup(group)).catch(() => undefined);
+          }
+        }, 10000);
+        return () => window.clearInterval(timer);
+      }, [currentPrefs.autoRefresh]);
+
+      const selected = store.selected;
+      const group = store.group;
+      const allGroups = Object.keys(store.all).map((key) => store.all[key]);
+      const currentGroup = store.current !== "" ? store.groups.find((item) => item.workspace === store.current) : undefined;
+
+      const choose = (workspace) => {
+        setOpenNo(0);
+        setComposing(false);
+        if (workspace === "*") {
+          void loadAll();
+          return;
+        }
+        void loadNotes(workspace);
+      };
+
+      const onSaved = () => {
+        setComposing(false);
+      };
+
+      const renderNotes = (target, notes) =>
+        notes.map((note) =>
+          h(NoteCard, {
+            key: `${target.workspace}#${note.no}`,
+            note,
+            workspace: target.workspace,
+            open: openNo === note.no,
+            onToggle: (no) => setOpenNo((current) => (current === no ? 0 : no))
+          })
+        );
+
+      const content = (() => {
+        if (store.status === "loading" && (selected === "" || (group === null && selected !== "*"))) {
+          return h("div", { className: "dsh-notes-empty" }, h("div", { className: "dsh-notes-empty-title" }, t("page.loading")));
+        }
+        if (store.status === "error") {
+          return h(
+            "div",
+            { className: "dsh-notes-error" },
+            h("span", null, `${t("page.failed")}${store.error?.message !== undefined && store.error.message !== "" ? `：${store.error.message}` : ""}`),
+            h("button", { type: "button", className: "dsh-notes-btn", "data-kind": "ghost", onClick: () => void refreshGroups("") }, t("page.retry"))
+          );
+        }
+        if (selected === "*") {
+          if (allGroups.length === 0) {
+            return h(
+              "div",
+              { className: "dsh-notes-empty" },
+              h("div", { className: "dsh-notes-empty-title" }, t("page.emptyAll")),
+              h("div", { className: "dsh-notes-empty-desc" }, t("page.emptyHint"))
+            );
+          }
+          return allGroups.map((entry) =>
+            h(
+              "div",
+              { key: entry.workspace },
+              h(
+                "div",
+                { className: "dsh-notes-group-head" },
+                h("span", { className: "dsh-notes-group-title" }, entry.title !== "" ? entry.title : shortPath(entry.workspace)),
+                h("span", { className: "dsh-notes-group-path" }, shortPath(entry.workspace)),
+                h("span", { className: "dsh-notes-rail-count" }, t("page.notes", { n: entry.notes.length }))
+              ),
+              entry.notes.length === 0
+                ? h("div", { className: "dsh-notes-banner" }, t("page.empty"))
+                : renderNotes(entry, entry.notes)
+            )
+          );
+        }
+        if (group === null) {
+          return h(
+            "div",
+            { className: "dsh-notes-empty" },
+            h("div", { className: "dsh-notes-empty-title" }, t("page.empty")),
+            h("div", { className: "dsh-notes-empty-desc" }, t("page.emptyHint"))
+          );
+        }
+        return [
+          h(
+            "div",
+            { className: "dsh-notes-group-head", key: "head" },
+            h("span", { className: "dsh-notes-group-title" }, group.title !== "" ? group.title : shortPath(group.workspace)),
+            h("span", { className: "dsh-notes-group-path" }, shortPath(group.workspace)),
+            h("span", { className: "dsh-notes-rail-count" }, t("page.notes", { n: group.notes.length }))
+          ),
+          composing ? h(Composer, { key: "composer", workspace: group.workspace, onSaved }) : null,
+          group.notes.length === 0 && !composing
+            ? h(
+                "div",
+                { className: "dsh-notes-empty", key: "empty" },
+                h("div", { className: "dsh-notes-empty-title" }, t("page.empty")),
+                h("div", { className: "dsh-notes-empty-desc" }, t("page.emptyHint"))
+              )
+            : null,
+          h("div", { key: "list", style: { display: "flex", flexDirection: "column", gap: "8px" } }, renderNotes(group, group.notes))
+        ];
+      })();
+
+      return h(
+        "div",
+        { className: "dsh-notes-page" },
+        h("style", null, CSS),
+        h(
+          "div",
+          { className: "dsh-notes-page-head" },
+          h(
+            "div",
+            { className: "dsh-notes-page-titles" },
+            h("span", { className: "dsh-notes-page-title" }, t("page.title")),
+            h("span", { className: "dsh-notes-page-sub" }, t("page.subtitle"))
+          ),
+          h(
+            "button",
+            {
+              type: "button",
+              className: "dsh-notes-btn",
+              onClick: () => {
+                if (selected === "*" && store.current !== "") {
+                  void loadNotes(store.current).then(() => setComposing(true));
+                } else {
+                  setComposing(true);
+                }
+                setOpenNo(0);
+              }
+            },
+            h("span", { style: { display: "inline-flex", alignItems: "center", gap: "5px" } }, h(PlusIcon, { size: 12 }), t("page.new"))
+          ),
+          h(
+            "button",
+            { type: "button", className: "dsh-notes-btn", "data-kind": "ghost", onClick: () => void refreshGroups("") },
+            h("span", { style: { display: "inline-flex", alignItems: "center", gap: "5px" } }, h(RefreshIcon, { size: 12 }), t("page.refresh"))
+          )
+        ),
+        h(
+          "div",
+          { className: "dsh-notes-page-body" },
+          h(
+            "div",
+            { className: "dsh-notes-rail", role: "navigation" },
+            h("div", { className: "dsh-notes-rail-label" }, t("page.current")),
+            store.current === ""
+              ? h("div", { className: "dsh-notes-banner", style: { padding: "0 10px" } }, t("page.noCurrent"))
+              : h(
                   "button",
                   {
                     type: "button",
-                    className: "dsh-sticky-iconbtn",
-                    title: translate("board.new"),
-                    "aria-label": translate("board.new"),
-                    onClick: () => openEditor(null)
+                    className: "dsh-notes-rail-item",
+                    "data-on": selected === store.current ? "true" : "false",
+                    onClick: () => choose(store.current)
                   },
-                  h(PlusIcon, { size: 15 })
+                  h(NoteIcon, { size: 13 }),
+                  h("span", { className: "dsh-notes-rail-name" }, currentGroup?.title !== undefined && currentGroup.title !== "" ? currentGroup.title : store.currentTitle !== "" ? store.currentTitle : shortPath(store.current)),
+                  h("span", { className: "dsh-notes-rail-count" }, String(currentGroup?.count ?? 0))
+                ),
+            h("div", { className: "dsh-notes-rail-label" }, t("page.workspaces")),
+            h(
+              "button",
+              {
+                type: "button",
+                className: "dsh-notes-rail-item",
+                "data-on": selected === "*" ? "true" : "false",
+                onClick: () => choose("*")
+              },
+              h("span", { className: "dsh-notes-rail-name" }, t("page.all")),
+              h(
+                "span",
+                { className: "dsh-notes-rail-count" },
+                String(store.groups.reduce((total, item) => total + item.count, 0))
+              )
+            ),
+            ...store.groups
+              .filter((item) => item.workspace !== store.current)
+              .map((item) =>
+                h(
+                  "button",
+                  {
+                    key: item.workspace,
+                    type: "button",
+                    className: "dsh-notes-rail-item",
+                    "data-on": selected === item.workspace ? "true" : "false",
+                    onClick: () => choose(item.workspace)
+                  },
+                  h("span", { className: "dsh-notes-rail-name" }, item.title !== "" ? item.title : shortPath(item.workspace)),
+                  h("span", { className: "dsh-notes-rail-count" }, String(item.count))
                 )
-              : null,
-            h(
-              "button",
-              {
-                type: "button",
-                className: "dsh-sticky-iconbtn",
-                title: translate("board.refresh"),
-                "aria-label": translate("board.refresh"),
-                onClick: () => void refresh()
-              },
-              h(RefreshIcon, { size: 14 })
-            ),
-            h(
-              "button",
-              {
-                type: "button",
-                className: "dsh-sticky-iconbtn",
-                title: translate("board.close"),
-                "aria-label": translate("board.close"),
-                onClick: () => writePrefs({ open: false })
-              },
-              h(CloseIcon, { size: 14 })
-            )
-          )
-        ),
-        banner,
-        mode === "edit" ? editor : h("div", { className: "dsh-sticky-list", key: "list" }, listBody),
-        h(
-          "div",
-          { className: "dsh-sticky-footer", key: "footer" },
-          h("span", { className: "dsh-sticky-path", title: current.path }, pathText || translate("board.loading")),
-          h(
-            "button",
-            { type: "button", className: "dsh-sticky-mini", onClick: () => void copyPath(), title: translate("board.copy") },
-            translate("board.copy")
-          )
-        )
-      );
-    }
-
-    /* ------------------------------------------------------------------ *
-     * 座位 3：插件页的设置卡片
-     * ------------------------------------------------------------------ */
-    function StickyPanel() {
-      useLocaleWakeup();
-      const currentPrefs = usePrefs();
-      const current = useStore();
-      const [copied, setCopied] = React.useState(false);
-
-      React.useEffect(() => {
-        if (current.status === "idle") void refresh();
-      }, [current.status]);
-
-      const copyPath = async () => {
-        const text = current.path || current.displayPath;
-        if (text === "") return;
-        try {
-          await navigator.clipboard.writeText(text);
-          setCopied(true);
-          window.setTimeout(() => setCopied(false), 1500);
-        } catch {
-          /* 剪贴板不可用时不假装成功 */
-        }
-      };
-
-      return h(
-        "section",
-        { className: "dsh-sticky-panel" },
-        h(Styles, { key: "css" }),
-        h(
-          "div",
-          { className: "dsh-sticky-panel-head", key: "head" },
-          h("span", { className: "dsh-sticky-mark" }, h(NoteIcon, { size: 16 })),
-          h(
-            "div",
-            { className: "dsh-sticky-panel-titles" },
-            h("span", { className: "dsh-sticky-panel-title" }, translate("panel.title")),
-            h("span", { className: "dsh-sticky-panel-desc" }, translate("panel.desc"))
-          )
-        ),
-        h(
-          "div",
-          { className: "dsh-sticky-panel-body" },
-          h(
-            "div",
-            { className: "dsh-sticky-row" },
-            h(
-              "div",
-              { className: "dsh-sticky-row-text" },
-              h("span", { className: "dsh-sticky-row-title" }, translate("panel.storage")),
-              h("span", { className: "dsh-sticky-row-desc" }, translate("panel.storageDesc"))
-            ),
-            h(
-              "div",
-              { className: "dsh-sticky-row-controls" },
-              h("code", { className: "dsh-sticky-code", title: current.path }, current.displayPath || "…"),
-              h(
-                "button",
-                { type: "button", className: "dsh-sticky-btn", onClick: () => void copyPath() },
-                copied ? translate("panel.copied") : translate("panel.copy")
-              )
-            )
-          ),
-          h(
-            "div",
-            { className: "dsh-sticky-row" },
-            h(
-              "div",
-              { className: "dsh-sticky-row-text" },
-              h("span", { className: "dsh-sticky-row-title" }, translate("panel.count")),
-              h(
-                "span",
-                { className: "dsh-sticky-row-desc" },
-                current.status === "ready"
-                  ? `${current.notes.length}`
-                  : current.status === "error" || current.status === "offline"
-                    ? errorText(current.error)
-                    : translate("board.loading")
-              )
-            ),
-            h(
-              "div",
-              { className: "dsh-sticky-row-controls" },
-              h(
-                "button",
-                { type: "button", className: "dsh-sticky-btn", onClick: () => writePrefs({ open: true }) },
-                translate("panel.open")
               ),
-              h(
-                "button",
-                { type: "button", className: "dsh-sticky-btn", onClick: () => void refresh() },
-                translate("panel.refresh")
-              )
-            )
-          ),
-          h(
-            "div",
-            { className: "dsh-sticky-row" },
             h(
               "div",
-              { className: "dsh-sticky-row-text" },
-              h("span", { className: "dsh-sticky-row-title" }, translate("panel.status")),
-              h(
-                "span",
-                { className: "dsh-sticky-row-desc" },
-                current.status === "ready" ? translate("panel.connected") : translate("panel.offline")
-              )
-            ),
-            h(
-              "div",
-              { className: "dsh-sticky-row-controls" },
+              {
+                className: "dsh-notes-rail-foot"
+              },
               h(
                 "button",
-                { type: "button", className: "dsh-sticky-btn", onClick: () => writePrefs({ open: !currentPrefs.open }) },
-                currentPrefs.open ? translate("board.close") : translate("panel.open")
-              )
+                {
+                  type: "button",
+                  className: "dsh-notes-rail-item",
+                  "data-on": showSettings ? "true" : "false",
+                  onClick: () => setShowSettings((value) => !value)
+                },
+                h("span", { className: "dsh-notes-rail-name" }, t("page.settings"))
+              ),
+              showSettings ? h(SettingsPanel, { compact: true }) : null,
+              h(
+                "div",
+                { className: "dsh-notes-banner", style: { padding: "6px", overflowWrap: "anywhere" } },
+                `${t("page.dir")}：${store.dir}`
+              ),
+              h("div", { className: "dsh-notes-banner", style: { padding: "6px" } }, t("page.toolsHint"))
             )
           ),
-          h(
-            "details",
-            { className: "dsh-sticky-help" },
-            h("summary", null, translate("panel.format")),
-            h("p", null, translate("panel.formatDesc")),
-            h("p", null, translate("panel.localDesc"))
-          )
+          h("div", { className: "dsh-notes-content" }, content)
         )
       );
     }
 
     /* ------------------------------------------------------------------ *
-     * 装配
+     * 插件页上的说明卡片
      * ------------------------------------------------------------------ */
-    function registerLocale(ctx) {
-      const locale = typeof ctx.get === "function" ? ctx.get("locale") : undefined;
-      if (locale === undefined || typeof locale.register !== "function" || typeof locale.bind !== "function") {
-        return;
-      }
-      const disposers = [];
-      try {
-        disposers.push(locale.register(NS, "zh", ZH));
-        disposers.push(locale.register(NS, "en", EN));
-        const bound = locale.bind(NS);
-        if (typeof bound === "function") {
-          translate = bound;
-          localeFace = locale;
+    function ConfigCard() {
+      useLocaleWakeup();
+      const store = useStore();
+      React.useEffect(() => {
+        void refreshGroups("");
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, []);
+      const total = store.groups.reduce((sum, item) => sum + item.count, 0);
+      return h(
+        "div",
+        { className: "dsh-notes-config" },
+        h("style", null, CSS),
+        h(
+          "div",
+          { className: "dsh-notes-config-head" },
+          h("span", { className: "dsh-notes-config-title" }, t("config.title")),
+          h("span", { className: "dsh-notes-config-desc" }, t("config.desc"))
+        ),
+        h(
+          "div",
+          null,
+          h(
+            "div",
+            { className: "dsh-notes-row" },
+            h("span", { className: "dsh-notes-row-key" }, t("config.where")),
+            h("span", { className: "dsh-notes-row-value" }, store.dir)
+          ),
+          h(
+            "div",
+            { className: "dsh-notes-row" },
+            h("span", { className: "dsh-notes-row-key" }, t("config.count")),
+            h("span", { className: "dsh-notes-row-value" }, String(total))
+          ),
+          h(
+            "div",
+            { className: "dsh-notes-row" },
+            h("span", { className: "dsh-notes-row-key" }, t("config.tool")),
+            h("span", { className: "dsh-notes-row-value" }, t("config.toolValue"))
+          )
+        ),
+        h(SettingsPanel, { compact: false })
+      );
+    }
+
+    /* ------------------------------------------------------------------ *
+     * 接线
+     * ------------------------------------------------------------------ */
+    return {
+      inject: ["slots"],
+      apply(ctx) {
+        ctxRef = ctx;
+        localeFace = typeof ctx.get === "function" ? ctx.get("locale") : undefined;
+        try {
+          localeFace?.register?.(NS, { zh: ZH, en: EN });
+        } catch (error) {
+          console.warn(`[${NS}] locale registration skipped:`, error);
         }
-      } catch (error) {
-        console.warn(`[${NS}] 文案未能挂到 locale 服务，退回内置中文：`, error);
-      }
-      if (disposers.length > 0 && typeof ctx.effect === "function") {
-        ctx.effect(
-          () => () => {
-            for (const dispose of disposers) {
-              try {
-                dispose();
-              } catch {
-                /* 已卸载 */
-              }
-            }
-          },
-          `${NS}/locale`
+
+        ctx.slots.inject(DOCK_SLOT, () =>
+          ctx.slots.register({ name: DOCK_SLOT, id: "sticky-notes", order: 14, label: () => t("dock.label") }, NotesDock)
+        );
+        ctx.slots.inject(OVERLAY_SLOT, () =>
+          ctx.slots.register({ name: OVERLAY_SLOT, id: "sticky-notes-quick", order: 24 }, QuickNote)
+        );
+        ctx.slots.inject(NAV_SLOT, () =>
+          ctx.slots.register(
+            { name: NAV_SLOT, id: PANEL_ID, order: 20, label: () => t("page.title") },
+            PanelIcon
+          )
+        );
+        ctx.slots.inject(PANEL_SLOT, () => ctx.slots.register({ name: PANEL_SLOT, key: PANEL_ID }, NotesPage));
+        ctx.slots.inject(CONFIG_SLOT, () =>
+          ctx.slots.register({ name: CONFIG_SLOT, key: NS }, ConfigCard)
         );
       }
-    }
-
-    async function apply(ctx) {
-      registerLocale(ctx);
-
-      ctx.slots.inject(DOCK_SLOT, () =>
-        ctx.slots.register({ name: DOCK_SLOT, id: "sticky-notes", order: 14 }, StickyDock)
-      );
-      ctx.slots.inject(OVERLAY_SLOT, () =>
-        ctx.slots.register({ name: OVERLAY_SLOT, id: "sticky-notes-board", order: 24 }, StickyBoard)
-      );
-      for (const key of ["dsh-sticky-notes", "include:dsh-sticky-notes"]) {
-        ctx.slots.inject(PANEL_SLOT, () =>
-          ctx.slots.register({ name: PANEL_SLOT, key, priority: 40 }, StickyPanel)
-        );
-      }
-
-      // 精确 Fetch 路由由 Host 半注册在 /api 下；浏览器这边只要有 fetch 就能用，
-      // 不再依赖 client 侧是否已经提供 connection 服务。
-      attach();
-    }
-
-    const moduleApi = { apply, inject: ["slots"] };
-    if (typeof window !== "undefined" && window.__dshStickyNotesTest === true) {
-      moduleApi.__internals = {
-        previewOf,
-        relativeTime,
-        normalizePrefs,
-        orderNotes,
-        draftOf,
-        emptyDraft,
-        draftKey,
-        createApi,
-        toClientError,
-        errorText,
-        saveLabel,
-        clampPos
-      };
-    }
-    return moduleApi;
+    };
   }
 });
