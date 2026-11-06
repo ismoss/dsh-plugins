@@ -438,8 +438,9 @@ window.__ModuleLoader__.load({
             error: null
           });
           if (current !== "") writePrefs({ lastWorkspace: current });
-          // 正在编辑时不要用服务端内容回灌，否则会把草稿换掉。
-          if (selected !== "" && selected !== "*" && !state.editing) await loadNotes(selected);
+          // 回灌照做：有未保存草稿的那张由 NoteCard 自己拦（转冲突提示），
+          // 只是展开看、没动过字的卡片必须能跟着 AI 的写入刷新。
+          if (selected !== "" && selected !== "*") await loadNotes(selected);
         } catch (error) {
           publish({ status: "error", error: toClientError(error) });
         } finally {
@@ -474,9 +475,8 @@ window.__ModuleLoader__.load({
       publish({ selected: "*", status: state.status === "ready" ? "ready" : "loading" });
       const groups = state.groups;
       for (const item of groups) {
-        if (!isRecord(state.all[item.workspace])) {
-          await loadNotes(item.workspace);
-        }
+        // 每次进来都重取：AI 刚追加完，缓存里的旧正文会让人以为没写进去。
+        await loadNotes(item.workspace);
       }
       publish({ status: "ready" });
     }
@@ -1154,7 +1154,12 @@ window.__ModuleLoader__.load({
             h("span", { className: "dsh-notes-card-title" }, note.title === "" ? t("page.untitled") : note.title),
             note.body === "" ? null : h("span", { className: "dsh-notes-card-preview" }, previewOf(note.body, 180))
           ),
-          h("span", { className: "dsh-notes-card-meta" }, note.updatedAt === "" ? "" : timeAgo(note.updatedAt))
+          h(
+            "span",
+            { className: "dsh-notes-card-meta" },
+            note.body.length > 0 ? `${note.body.length} 字` : "",
+            note.updatedAt === "" ? "" : ` · ${timeAgo(note.updatedAt)}`
+          )
         ),
         open
           ? h(
@@ -1458,7 +1463,6 @@ window.__ModuleLoader__.load({
         };
         const timer = window.setInterval(() => {
           if (!visible()) return;
-          if (state.editing) return;
           if (state.selected !== "" && state.selected !== "*") {
             void call("notes", { workspace: state.selected }).then((group) => upsertGroup(group)).catch(() => undefined);
           }
