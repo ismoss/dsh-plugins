@@ -14,6 +14,8 @@ let spec;
 const stored = new Map();
 const win = {
   __dshOffworkCountdownTest: true,
+  innerWidth: 1600,
+  innerHeight: 1000,
   __ModuleLoader__: { load: (value) => { spec = value; } },
   localStorage: {
     getItem: (key) => (stored.has(key) ? stored.get(key) : null),
@@ -52,7 +54,7 @@ const near = (label, actual, expected, tolerance = 1000) => {
   console.log(`${ok ? "PASS" : "FAIL"}  ${label}${ok ? "" : `  (got ${actual}, want ~${expected})`}`);
 };
 
-const { parseClock, viewAt, formatDuration, normalize, percentOf, scheduleOf, timerElapsed, timerLabelOf, floatWidth } =
+const { parseClock, viewAt, formatDuration, normalize, percentOf, scheduleOf, timerElapsed, timerLabelOf, floatWidth, resolveAnchor, anchorFromPoint } =
   module.__internals;
 const MIN = 60000;
 const settings = { start: "09:00", end: "18:00" };
@@ -193,8 +195,36 @@ check("计时文案超长截断", normalize({ timerLabel: "x".repeat(40) }).time
 check("位置下方保留", normalize({ floatSide: "bottom" }).floatSide, "bottom");
 check("位置非法回退上方", normalize({ floatSide: "left" }).floatSide, "top");
 check("lastDrink 非法回退 null", normalize({ lastDrink: "x" }).lastDrink, null);
-check("pos 合法则保留", JSON.stringify(normalize({ pos: { x: 10, y: 20 } }).pos), '{"x":10,"y":20}');
-check("pos 非法则丢弃", normalize({ pos: { x: "a", y: 1 } }).pos, null);
+check(
+  "pos 存的是「贴边 + 距离」",
+  JSON.stringify(normalize({ pos: { ax: "right", dx: 24, ay: "bottom", dy: 96 } }).pos),
+  '{"ax":"right","dx":24,"ay":"bottom","dy":96}'
+);
+check("pos 缺 dx 则丢弃", normalize({ pos: { ax: "right" } }).pos, null);
+check("pos 旧格式（像素）按当前窗口换算", JSON.stringify(normalize({ pos: { x: 1200, y: 200 } }).pos), '{"ax":"right","dx":132,"ay":"top","dy":200}');
+check("pos 完全非法则丢弃", normalize({ pos: { x: "a", y: 1 } }).pos, null);
+
+// ── 悬浮窗位置：窗口缩放时应当贴边跟随，而不是被夹在中间 ──────────────
+const rightAnchor = { ax: "right", dx: 24, ay: "top", dy: 120 };
+check("宽窗口：贴右边 24px", resolveAnchor(rightAnchor, 268, 150).x, 1600 - 268 - 24);
+win.innerWidth = 1200;
+check("缩窄窗口：仍然贴右边 24px", resolveAnchor(rightAnchor, 268, 150).x, 1200 - 268 - 24);
+win.innerWidth = 1600;
+check("再放大：回到最右，不会留在中间", resolveAnchor(rightAnchor, 268, 150).x, 1600 - 268 - 24);
+win.innerWidth = 1200;
+check(
+  "左锚在窄窗口下也保持左边距",
+  resolveAnchor({ ax: "left", dx: 40, ay: "top", dy: 120 }, 268, 150).x,
+  40
+);
+check("距离大到放不下时夹进可视区", resolveAnchor({ ax: "right", dx: 5000, ay: "top", dy: 120 }, 268, 150).x, 8);
+win.innerWidth = 1600;
+check("贴底锚定按窗口高度算", resolveAnchor({ ax: "right", dx: 24, ay: "bottom", dy: 96 }, 268, 160).y, 1000 - 160 - 96);
+check(
+  "拖动落点换算成锚点（左下角）",
+  JSON.stringify(anchorFromPoint({ x: 40, y: 700 }, 268, 160)),
+  '{"ax":"left","dx":40,"ay":"bottom","dy":140}'
+);
 
 console.log(failures === 0 ? "\n全部通过" : `\n${failures} 项失败`);
 process.exit(failures === 0 ? 0 : 1);

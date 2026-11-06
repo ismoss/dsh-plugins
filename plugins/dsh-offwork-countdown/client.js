@@ -221,10 +221,29 @@ window.__ModuleLoader__.load({
       return { hours, minutes, minutesOfDay: hours * 60 + minutes };
     }
 
+    /**
+     * 位置存的是「贴哪个边 + 离边多远」：`{ ax, dx, ay, dy }`。
+     * 老版本存的是像素 `{ x, y }`，读进来时按当前窗口换算一次，之后不会再随缩放漂移。
+     */
     function normalizePos(raw) {
       if (raw === null || typeof raw !== "object") return null;
-      if (!Number.isFinite(raw.x) || !Number.isFinite(raw.y)) return null;
-      return { x: raw.x, y: raw.y };
+      if ((raw.ax === "left" || raw.ax === "right") && Number.isFinite(raw.dx)) {
+        return {
+          ax: raw.ax,
+          dx: Math.max(0, raw.dx),
+          ay: raw.ay === "bottom" ? "bottom" : "top",
+          dy: Number.isFinite(raw.dy) ? Math.max(0, raw.dy) : 0
+        };
+      }
+      if (
+        Number.isFinite(raw.x) &&
+        Number.isFinite(raw.y) &&
+        typeof window !== "undefined" &&
+        window.innerWidth > 0
+      ) {
+        return anchorFromPoint({ x: raw.x, y: raw.y }, CARD_WIDTH, 150);
+      }
+      return null;
     }
 
     function normalize(raw) {
@@ -518,35 +537,63 @@ window.__ModuleLoader__.load({
     }
 
     /* ------------------------------------------------------------------ *
-     * 悬浮窗的位置：右上 / 右下，拖动后记住
+     * 悬浮窗的位置：按「贴哪个边 + 离边多远」存，不存像素坐标
+     *
+     * 存像素的话，窗口一缩小 x 会被夹进新视口，再放大就留在中间了。改成锚点后，
+     * 画在哪由窗口尺寸现算：右锚就一直贴着右边，左锚就一直贴着左边。
      * ------------------------------------------------------------------ */
-    function clampPos(pos, width) {
-      const cardWidth = width > 0 ? width : CARD_WIDTH;
-      const maxX = Math.max(8, window.innerWidth - cardWidth - 8);
-      // 竖直方向：顶部让开窗口按钮那一栏，底部也留出条儿；窗口特别矮时以顶部为准。
-      const maxY = Math.max(TOP_SAFE, window.innerHeight - 72);
-      return {
-        x: Math.min(Math.max(8, pos.x), maxX),
-        y: Math.min(Math.max(TOP_SAFE, pos.y), maxY)
-      };
-    }
-
     /** 关掉秒之后数字短一大截，卡片跟着收窄，不然右边会空一块。 */
     function floatWidth(settings) {
       return settings.floatSeconds === false ? CARD_WIDTH_COMPACT : CARD_WIDTH;
     }
 
-    /** 右上或右下；`height` 是卡片实测高度（首帧拿不到时按 150 估）。 */
-    function anchorPos(side, height, width) {
-      const cardHeight = height > 0 ? height : 150;
+    /** 把点夹进可视区（顶部让开窗口按钮那一栏，底部留一条）。 */
+    function clampPoint(point, width) {
       const cardWidth = width > 0 ? width : CARD_WIDTH;
-      return clampPos({
-        x: window.innerWidth - cardWidth - 24,
-        y:
-          side === "bottom"
-            ? window.innerHeight - cardHeight - 96
-            : Math.max(76, Math.round(window.innerHeight * 0.16))
-      });
+      const maxX = Math.max(8, window.innerWidth - cardWidth - 8);
+      const maxY = Math.max(TOP_SAFE, window.innerHeight - 72);
+      return {
+        x: Math.min(Math.max(8, point.x), maxX),
+        y: Math.min(Math.max(TOP_SAFE, point.y), maxY)
+      };
+    }
+
+    /** 设置页的「上方 / 下方」：贴右边 24px，贴顶 16vh 或贴底 96px。 */
+    function defaultAnchor(side) {
+      return {
+        ax: "right",
+        dx: 24,
+        ay: side === "bottom" ? "bottom" : "top",
+        dy: side === "bottom" ? 96 : Math.max(76, Math.round(window.innerHeight * 0.16))
+      };
+    }
+
+    /** 锚点 → 当前窗口下的像素坐标（每次渲染现算，所以缩放时自动跟着走）。 */
+    function resolveAnchor(anchor, width, height) {
+      const cardWidth = width > 0 ? width : CARD_WIDTH;
+      const cardHeight = height > 0 ? height : 150;
+      return clampPoint(
+        {
+          x: anchor.ax === "right" ? window.innerWidth - cardWidth - anchor.dx : anchor.dx,
+          y: anchor.ay === "bottom" ? window.innerHeight - cardHeight - anchor.dy : anchor.dy
+        },
+        width
+      );
+    }
+
+    /** 拖动落点 → 锚点：按卡片中心落在哪半边决定贴左还是贴右、贴上还是贴下。 */
+    function anchorFromPoint(point, width, height) {
+      const cardWidth = width > 0 ? width : CARD_WIDTH;
+      const cardHeight = height > 0 ? height : 150;
+      const clamped = clampPoint(point, width);
+      const ax = clamped.x + cardWidth / 2 <= window.innerWidth / 2 ? "left" : "right";
+      const ay = clamped.y + cardHeight / 2 <= window.innerHeight / 2 ? "top" : "bottom";
+      return {
+        ax,
+        dx: ax === "left" ? clamped.x : window.innerWidth - cardWidth - clamped.x,
+        ay,
+        dy: ay === "top" ? clamped.y : window.innerHeight - cardHeight - clamped.y
+      };
     }
 
     /* ------------------------------------------------------------------ *
@@ -827,29 +874,29 @@ window.__ModuleLoader__.load({
       const visible = settings.float === true;
       const now = useSecondTick(visible);
       const width = floatWidth(settings);
-      const [pos, setPos] = React.useState(() =>
-        settings.pos === null ? anchorPos(settings.floatSide, 0, width) : clampPos(settings.pos, width)
-      );
-      const drag = React.useRef(null);
       const cardRef = React.useRef(null);
+      const drag = React.useRef(null);
+      const [cardHeight, setCardHeight] = React.useState(0);
+      const [dragPos, setDragPos] = React.useState(null);
+      const [, bump] = React.useState(0);
 
-      // 位置：拖过就听 settings.pos；没拖过就按 上方/下方 现算。
-      // 用布局效果 + 实测高度，卡片在绘制前就落到正确的位置，不会闪一下。
-      const posKey = settings.pos === null ? "" : `${settings.pos.x},${settings.pos.y}`;
+      // 量卡片高度：贴底锚定与拖动换算都要用（首帧是 0，布局效果补上）。
       React.useLayoutEffect(() => {
         if (!visible) return;
-        if (settings.pos !== null) {
-          setPos(clampPos(settings.pos, width));
-          return;
-        }
-        setPos(anchorPos(settings.floatSide, cardRef.current === null ? 0 : cardRef.current.offsetHeight, width));
-      }, [posKey, settings.floatSide, visible, width]);
-      // 窗口尺寸变了 → 收回视野。
+        const height = cardRef.current === null ? 0 : cardRef.current.offsetHeight;
+        setCardHeight((previous) => (Math.abs(previous - height) > 0.5 ? height : previous));
+      });
+
+      // 窗口缩放：位置由锚点现算，这里只需要叫醒一次渲染。
+      // （旧实现把像素坐标存在 state 里，缩小窗口时被夹到中间，放大后就留在中间了。）
       React.useEffect(() => {
-        const onResize = () => setPos((previous) => clampPos(previous, width));
+        const onResize = () => bump((count) => count + 1);
         window.addEventListener("resize", onResize);
         return () => window.removeEventListener("resize", onResize);
-      }, [width]);
+      }, []);
+
+      const anchor = settings.pos === null ? defaultAnchor(settings.floatSide) : settings.pos;
+      const pos = dragPos === null ? resolveAnchor(anchor, width, cardHeight) : dragPos;
 
       const moveTo = (event) => {
         const current = drag.current;
@@ -858,8 +905,8 @@ window.__ModuleLoader__.load({
         const dy = event.clientY - current.startY;
         if (!current.moved && Math.abs(dx) + Math.abs(dy) < DRAG_THRESHOLD) return;
         current.moved = true;
-        setPos(
-          clampPos({ x: event.clientX - current.offsetX, y: event.clientY - current.offsetY }, width)
+        setDragPos(
+          clampPoint({ x: event.clientX - current.offsetX, y: event.clientY - current.offsetY }, width)
         );
       };
 
@@ -885,17 +932,22 @@ window.__ModuleLoader__.load({
         const current = drag.current;
         if (current === null || current.pointerId !== event.pointerId) return;
         drag.current = null;
-        if (!current.moved) return;
-        // 只把最终位置写进设置，拖动过程中不碰 localStorage。
-        writeSettings({
-          pos: clampPos(
-            {
-              x: event.clientX - current.offsetX,
-              y: event.clientY - current.offsetY
-            },
-            width
-          )
-        });
+        if (!current.moved) {
+          setDragPos(null);
+          return;
+        }
+        const point = clampPoint(
+          { x: event.clientX - current.offsetX, y: event.clientY - current.offsetY },
+          width
+        );
+        setDragPos(null);
+        // 只把「贴边 + 距离」写进设置，拖动过程中不碰 localStorage。
+        writeSettings({ pos: anchorFromPoint(point, width, cardHeight) });
+      };
+
+      const onPointerCancel = () => {
+        drag.current = null;
+        setDragPos(null);
       };
 
       if (!visible) return null;
@@ -918,7 +970,7 @@ window.__ModuleLoader__.load({
           onPointerDown,
           onPointerMove: moveTo,
           onPointerUp,
-          onPointerCancel: onPointerUp,
+          onPointerCancel,
           onDoubleClick: () => {
             if (settings.dblclick !== true) return;
             writeSettings({ float: false });
@@ -1368,7 +1420,10 @@ window.__ModuleLoader__.load({
         workProgress,
         timerElapsed,
         timerLabelOf,
-        floatWidth
+        floatWidth,
+        resolveAnchor,
+        anchorFromPoint,
+        defaultAnchor
       };
     }
     return api;
