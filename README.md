@@ -29,7 +29,8 @@ plugins/
     client.js              # 浏览器半，window.__ModuleLoader__.load 自执行
     locale/{zh,en}.json    # 插件页显示的标题与描述
     icon.svg               # 插件页图标（≤256KiB，留在包内）
-    README.md              # 这个插件干什么、怎么配
+    README.md              # 用户视角：插件干什么、怎么配（会整篇渲染到插件页）
+    DEVELOPING.md          # 开发视角：注册表、数据字段、边界规则、已知坑、校验
     test/logic.mjs         # 纯函数单测，node test/logic.mjs
 ```
 
