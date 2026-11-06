@@ -357,8 +357,7 @@ window.__ModuleLoader__.load({
       selected: "", // "" = 未选；"*" = 所有工作区
       group: null, // { workspace, title, notes: [] }
       all: {}, // workspace -> group（“所有工作区”视图）
-      error: null,
-      editing: false
+      error: null
     };
     const listeners = new Set();
     const pendingGroups = new Map();
@@ -437,7 +436,8 @@ window.__ModuleLoader__.load({
             selected,
             error: null
           });
-          if (current !== "") writePrefs({ lastWorkspace: current });
+          // 轮询每 10 秒跑一次，值没变就别写 localStorage（不然所有订阅者白重渲染一遍）。
+          if (current !== "" && prefs.lastWorkspace !== current) writePrefs({ lastWorkspace: current });
           // 回灌照做：有未保存草稿的那张由 NoteCard 自己拦（转冲突提示），
           // 只是展开看、没动过字的卡片必须能跟着 AI 的写入刷新。
           if (selected !== "" && selected !== "*") await loadNotes(selected);
@@ -890,6 +890,9 @@ window.__ModuleLoader__.load({
       const [status, setStatus] = React.useState("idle");
       const [error, setError] = React.useState("");
       const bodyRef = React.useRef(null);
+      // Ctrl+Enter 在 effect 里绑一次，闭包会停在「刚打开、还没输入」那一刻的 submit；
+      // 用 ref 指向最新那份，快捷键才不会拿到空的 title/body。
+      const submitRef = React.useRef(null);
 
       // 拿不到会话工作区时不要拿「上次记住的工作区」兜底写——那会写进别的工作区。
       const workspace = store.currentLive === true ? store.current : "";
@@ -909,7 +912,7 @@ window.__ModuleLoader__.load({
           }
           if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
             event.preventDefault();
-            void submit();
+            void submitRef.current?.();
           }
         };
         window.addEventListener("keydown", onKey, true);
@@ -937,6 +940,8 @@ window.__ModuleLoader__.load({
           setError(failure?.message !== undefined && failure.message !== "" ? failure.message : t("quick.failed"));
         }
       }
+
+      submitRef.current = submit;
 
       if (!open) return null;
 
@@ -1439,13 +1444,6 @@ window.__ModuleLoader__.load({
       const [openNo, setOpenNo] = React.useState(0);
       const [composing, setComposing] = React.useState(false);
       const [showSettings, setShowSettings] = React.useState(false);
-
-      React.useEffect(() => {
-        state.editing = openNo !== 0 || composing;
-        return () => {
-          state.editing = false;
-        };
-      }, [openNo, composing]);
 
       React.useEffect(() => {
         void refreshGroups("").then(() => {
