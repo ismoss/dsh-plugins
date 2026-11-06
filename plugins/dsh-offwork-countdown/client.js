@@ -1336,8 +1336,13 @@ window.__ModuleLoader__.load({
       ctx.slots.inject(OVERLAY_SLOT, () =>
         ctx.slots.register({ name: OVERLAY_SLOT, id: "offwork-countdown-float", order: 20 }, OffworkFloat)
       );
-      // 插件页的配置卡片：key 是包名（Loader 有时会加 `include:` 前缀，两个都挂）。
-      for (const key of ["dsh-offwork-countdown", "include:dsh-offwork-countdown"]) {
+      // 插件页的配置卡片：宿主按 loader entry id 派发，不同版本也可能是包名，
+      // 三种写法都挂（`include:` + 包名 / `include:` + patch 行 id / 纯包名）。
+      for (const key of [
+        "dsh-offwork-countdown",
+        "include:dsh-offwork-countdown",
+        "include:offwork-countdown"
+      ]) {
         ctx.slots.inject(PANEL_SLOT, () =>
           ctx.slots.register({ name: PANEL_SLOT, key, priority: 30 }, OffworkPanel)
         );
