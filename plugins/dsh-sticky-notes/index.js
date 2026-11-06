@@ -289,8 +289,23 @@ function toolRender(args, value) {
     return [{ type: "text", text: `#${result.no} ${result.title}\n\n${result.body}` }];
   }
   if (typeof result.no === "number") {
-    const verb = result.created === true ? "created" : call.action === "delete" ? "deleted" : "updated";
-    return [{ type: "text", text: `note #${result.no} ${verb}` }];
+    const verb =
+      call.action === "board"
+        ? result.created === true
+          ? "board created as"
+          : "board post added to"
+        : call.action === "delete"
+          ? "deleted"
+          : call.action === "status"
+            ? "handed over:"
+            : result.created === true
+              ? "created"
+              : "updated";
+    const extra =
+      call.action === "status" && typeof result.status === "string"
+        ? ` [${result.status}${result.owner === "" || result.owner === undefined ? "" : ` @${result.owner}`}]`
+        : "";
+    return [{ type: "text", text: `note #${result.no} ${verb}${extra}` }];
   }
   return [{ type: "text", text: JSON.stringify(value) }];
 }

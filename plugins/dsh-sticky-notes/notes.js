@@ -568,7 +568,9 @@ export function applyBoardPost(notes, text, options) {
   if (chunk.trim() === "") throw new NotesError("sticky/invalid", "the board post is empty", { field: "body" });
   const now = options?.now ?? new Date().toISOString();
   const who = ownerOf(options);
-  const stamp = `[${now.slice(11, 16)}]`;
+  // 用本地时间：`now` 是 ISO(UTC)，直接切会差 8 小时（Asia/Shanghai）。
+  const at = new Date(now);
+  const stamp = `[${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}]`;
   const line = `- ${stamp}${who === "" ? "" : ` @${who}`} ${chunk.replace(/\n/g, " ")}`;
   const index = list.findIndex((note) => makeNote(note).kind === BOARD_KIND);
 

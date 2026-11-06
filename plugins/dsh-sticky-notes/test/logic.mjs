@@ -566,12 +566,15 @@ await test("status: applyStatus flips state and records who did it", () => {
 });
 
 await test("board: first post creates the board note, later posts append a timestamped line", () => {
-  const first = applyBoardPost([], "A 改完了 3 号", { now: "2026-11-06T08:15:00.000Z", by: "sess-a", newId: () => "board" });
+  // 用本地时间构造：公告栏的时间戳按宿主本地时钟显示
+  const at0815 = new Date(2026, 10, 6, 8, 15, 0).toISOString();
+  const at0820 = new Date(2026, 10, 6, 8, 20, 0).toISOString();
+  const first = applyBoardPost([], "A 改完了 3 号", { now: at0815, by: "sess-a", newId: () => "board" });
   assert.equal(first.created, true);
   assert.equal(first.note.kind, "board");
   assert.equal(first.note.no, 1);
   assert.match(first.note.body, /^- \[08:15\] @sess-a A 改完了 3 号$/m);
-  const second = applyBoardPost(first.notes, "B 接手", { now: "2026-11-06T08:20:00.000Z", by: "sess-b" });
+  const second = applyBoardPost(first.notes, "B 接手", { now: at0820, by: "sess-b" });
   assert.equal(second.created, false);
   assert.equal(second.note.no, 1);
   const lines = second.note.body.split("\n").filter(Boolean);
