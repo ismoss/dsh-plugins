@@ -13,6 +13,8 @@ import { join } from "node:path";
 import {
   NotesError,
   applyAppend,
+  applyBoardPost,
+  applyStatus,
   applyRemove,
   applySave,
   normalizeInput,
@@ -540,6 +542,52 @@ await test("store: concurrent saves on one workspace keep every note", async () 
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+
+await test("status: a note carries status/owner/topic through a round trip", () => {
+  const notes = applySave([], { title: "交接", body: "x", status: "doing", owner: "session-a1", topic: "TV0004" }, { ...cond, by: "sess-b2" }).notes;
+  const text = serializeNotesFile(notes, "# 便签", { workspace: "E:\\w" });
+  const round = parseNotesFile(text).notes;
+  assert.equal(round[0].status, "doing");
+  assert.equal(round[0].owner, "session-a1");
+  assert.equal(round[0].topic, "TV0004");
+  assert.equal(round[0].updatedBy, "sess-b2");
+});
+
+await test("status: applyStatus flips state and records who did it", () => {
+  const notes = applySave([], { title: "t", body: "b" }, cond).notes;
+  const result = applyStatus(notes, 1, { status: "done", owner: "session-b" }, { now: "2026-11-06T08:00:00.000Z", by: "sess-b" });
+  assert.equal(result.note.status, "done");
+  assert.equal(result.note.owner, "session-b");
+  assert.equal(result.note.updatedBy, "sess-b");
+  assert.equal(result.note.rev, 2);
+  assert.throws(() => applyStatus(notes, 1, { status: "nope" }, cond), (error) => error.code === "sticky/invalid");
+});
+
+await test("board: first post creates the board note, later posts append a timestamped line", () => {
+  const first = applyBoardPost([], "A 改完了 3 号", { now: "2026-11-06T08:15:00.000Z", by: "sess-a", newId: () => "board" });
+  assert.equal(first.created, true);
+  assert.equal(first.note.kind, "board");
+  assert.equal(first.note.no, 1);
+  assert.match(first.note.body, /^- \[08:15\] @sess-a A 改完了 3 号$/m);
+  const second = applyBoardPost(first.notes, "B 接手", { now: "2026-11-06T08:20:00.000Z", by: "sess-b" });
+  assert.equal(second.created, false);
+  assert.equal(second.note.no, 1);
+  const lines = second.note.body.split("\n").filter(Boolean);
+  assert.equal(lines.length, 2);
+  assert.match(lines[1], /@sess-b B 接手/);
+});
+
+await test("board: the board is pruned so it cannot grow without bound", () => {
+  let notes = [];
+  for (let index = 0; index < 100; index += 1) {
+    const result = applyBoardPost(notes, `第 ${index} 条`, { now: "2026-11-06T08:00:00.000Z", by: "s" });
+    notes = result.notes;
+  }
+  const board = notes.find((note) => note.kind === "board");
+  assert.ok(board.body.split("\n").length <= 80);
+  assert.match(board.body, /第 99 条/);
 });
 
 if (failed > 0) {

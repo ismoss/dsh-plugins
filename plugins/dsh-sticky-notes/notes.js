@@ -26,6 +26,12 @@ export const MAX_BODY = 40000;
 export const MAX_NOTES = 500;
 /** 编号上界：再大就没有意义，而且 2^53 附近 cursor+=1 会不前进（Host 卡死）。 */
 export const MAX_NOTE_NUMBER = 1000000000;
+/** 便签状态；`board` 是每个工作区那张「公告栏」便签的 kind。 */
+export const NOTE_STATUS = ["open", "doing", "done"];
+export const DEFAULT_STATUS = "open";
+export const MAX_OWNER = 64;
+export const MAX_TOPIC = 80;
+export const BOARD_KIND = "board";
 
 /** 单文件上限；防止一次读取把几十 MB 塞进浏览器或工具结果。 */
 export const MAX_FILE_BYTES = 4 * 1024 * 1024;
@@ -95,6 +101,11 @@ function makeNote(raw) {
     id: typeof source.id === "string" && NOTE_ID.test(source.id) ? source.id : "",
     title: Array.from(title).slice(0, MAX_TITLE).join(""),
     body,
+    status: NOTE_STATUS.includes(source.status) ? source.status : DEFAULT_STATUS,
+    owner: typeof source.owner === "string" ? oneLine(source.owner).slice(0, MAX_OWNER) : "",
+    topic: typeof source.topic === "string" ? oneLine(source.topic).slice(0, MAX_TOPIC) : "",
+    updatedBy: typeof source.updatedBy === "string" ? oneLine(source.updatedBy).slice(0, MAX_OWNER) : "",
+    kind: source.kind === BOARD_KIND ? BOARD_KIND : "",
     createdAt: isoOrEmpty(source.createdAt),
     updatedAt: isoOrEmpty(source.updatedAt),
     rev: Number.isInteger(source.rev) && source.rev >= 0 ? source.rev : 0
@@ -231,6 +242,11 @@ export function parseNotesFile(text) {
       id: raw.id,
       title,
       body,
+      status: raw.status,
+      owner: raw.owner,
+      topic: raw.topic,
+      updatedBy: raw.by,
+      kind: raw.kind,
       createdAt: raw.created,
       updatedAt: raw.updated,
       rev: raw.rev
@@ -306,13 +322,14 @@ export function serializeNotesFile(notes, preamble, meta) {
   const head = preambleWithMeta(preamble, { ...(meta ?? {}), lastNo: high });
   const blocks = list.map((raw) => {
     const note = makeNote(raw);
-    const payload = {
-      no: note.no,
-      id: note.id,
-      created: note.createdAt,
-      updated: note.updatedAt,
-      rev: note.rev
-    };
+    const payload = { no: note.no, id: note.id, status: note.status };
+    if (note.owner !== "") payload.owner = note.owner;
+    if (note.topic !== "") payload.topic = note.topic;
+    if (note.updatedBy !== "") payload.by = note.updatedBy;
+    if (note.kind !== "") payload.kind = note.kind;
+    payload.created = note.createdAt;
+    payload.updated = note.updatedAt;
+    payload.rev = note.rev;
     const body = note.body === "" ? "" : `${demoteBodyHeadings(note.body)}\n`;
     const heading = titleForFile(note.title);
     return `## ${note.no}.${heading === "" ? "" : ` ${heading}`}\n<!-- dsh-note: ${JSON.stringify(payload)} -->\n${body}`;
@@ -350,6 +367,14 @@ export function normalizeInput(raw, options = {}) {
   const input = {};
   if (hasTitle) input.title = title;
   if (hasBody) input.body = body;
+  if (typeof source.status === "string") {
+    if (!NOTE_STATUS.includes(source.status)) {
+      throw new NotesError("sticky/invalid", `status must be one of ${NOTE_STATUS.join(", ")}`, { field: "status" });
+    }
+    input.status = source.status;
+  }
+  if (typeof source.owner === "string") input.owner = oneLine(source.owner).slice(0, MAX_OWNER);
+  if (typeof source.topic === "string") input.topic = oneLine(source.topic).slice(0, MAX_TOPIC);
   return input;
 }
 
@@ -357,6 +382,11 @@ export function normalizeInput(raw, options = {}) {
  * 下一个编号：取「现有最大号」和「高水位」的较大者 + 1。
  * 高水位写在文件头，所以删掉最大号再新建也不会复用——编号可以被 AI 长期引用。
  */
+function ownerOf(options) {
+  const who = options?.by;
+  return typeof who === "string" ? oneLine(who).slice(0, MAX_OWNER) : "";
+}
+
 /** baseRev：没传 = 不校验；传了就必须是整数（字符串 "3" 不能当成没传）。 */
 function readBaseRev(value) {
   if (value === undefined || value === null) return null;
@@ -416,7 +446,7 @@ export function applySave(notes, raw, options) {
     if (baseRev !== null && baseRev !== current.rev) {
       throw new NotesError("sticky/conflict", "the note changed after this editor read it", { current });
     }
-    const note = { ...current, ...input, updatedAt: now, rev: current.rev + 1 };
+    const note = { ...current, ...input, updatedAt: now, updatedBy: ownerOf(options), rev: current.rev + 1 };
     list[index] = note;
     return { notes: assignNumbers(list), note };
   }
@@ -434,6 +464,11 @@ export function applySave(notes, raw, options) {
     id: newId(),
     title: input.title ?? "",
     body: input.body ?? "",
+    status: input.status ?? DEFAULT_STATUS,
+    owner: input.owner ?? "",
+    topic: input.topic ?? "",
+    updatedBy: ownerOf(options),
+    kind: source.kind === BOARD_KIND ? BOARD_KIND : "",
     createdAt: now,
     updatedAt: now,
     rev: 1
@@ -467,7 +502,7 @@ export function applyAppend(notes, no, text, options) {
     });
   }
   const now = typeof options?.now === "string" ? options.now : new Date().toISOString();
-  const note = { ...current, body, updatedAt: now, rev: current.rev + 1 };
+  const note = { ...current, body, updatedAt: now, updatedBy: ownerOf(options), rev: current.rev + 1 };
   list[index] = note;
   return { notes: list, note };
 }
@@ -489,6 +524,87 @@ export function applyRemove(notes, no, baseRev) {
   }
   list.splice(index, 1);
   return { notes: list, removed };
+}
+
+/**
+ * 改一张便签的状态 / 接手人（跨会话交接用的就是它）。
+ *
+ * @param {Array<object>} notes
+ * @param {number} no
+ * @param {{status?: string, owner?: string}} patch
+ * @param {{now: string, by?: string}} options
+ */
+export function applyStatus(notes, no, patch, options) {
+  const list = Array.isArray(notes) ? notes.slice() : [];
+  const index = noteByNumber(list, no);
+  const current = list[index];
+  const source = isRecord(patch) ? patch : {};
+  const next = { ...current, updatedAt: options?.now ?? new Date().toISOString(), updatedBy: ownerOf(options), rev: current.rev + 1 };
+  if (source.status !== undefined) {
+    if (!NOTE_STATUS.includes(source.status)) {
+      throw new NotesError("sticky/invalid", `status must be one of ${NOTE_STATUS.join(", ")}`, { field: "status" });
+    }
+    next.status = source.status;
+  }
+  if (typeof source.owner === "string") next.owner = oneLine(source.owner).slice(0, MAX_OWNER);
+  list[index] = next;
+  return { notes: list, note: next };
+}
+
+/** 公告栏最多留多少行，避免它越滚越长。 */
+export const BOARD_MAX_LINES = 80;
+
+/**
+ * 往「公告栏」便签追加一行；没有就建一张（`kind: "board"`）。
+ * 行格式：`- [HH:MM] @会话：内容`——谁、什么时候、做了什么。
+ *
+ * @param {Array<object>} notes
+ * @param {string} text
+ * @param {{now: string, by?: string, newId?: () => string, lastNo?: number}} options
+ */
+export function applyBoardPost(notes, text, options) {
+  const list = Array.isArray(notes) ? notes.slice() : [];
+  const chunk = String(text ?? "").replace(/\s+$/, "");
+  if (chunk.trim() === "") throw new NotesError("sticky/invalid", "the board post is empty", { field: "body" });
+  const now = options?.now ?? new Date().toISOString();
+  const who = ownerOf(options);
+  const stamp = `[${now.slice(11, 16)}]`;
+  const line = `- ${stamp}${who === "" ? "" : ` @${who}`} ${chunk.replace(/\n/g, " ")}`;
+  const index = list.findIndex((note) => makeNote(note).kind === BOARD_KIND);
+
+  if (index < 0) {
+    const note = {
+      no: nextNumber(list, options?.lastNo),
+      id: typeof options?.newId === "function" ? options.newId() : "board",
+      title: "公告栏",
+      body: line,
+      status: DEFAULT_STATUS,
+      owner: "",
+      topic: "",
+      updatedBy: who,
+      kind: BOARD_KIND,
+      createdAt: now,
+      updatedAt: now,
+      rev: 1
+    };
+    list.push(note);
+    return { notes: list, note, created: true };
+  }
+
+  const current = list[index];
+  const lines = `${current.body === "" ? "" : `${current.body}\n`}${line}`
+    .split("\n")
+    .filter((row) => row.trim() !== "");
+  const kept = lines.slice(-BOARD_MAX_LINES);
+  const note = {
+    ...current,
+    body: kept.join("\n"),
+    updatedBy: who,
+    updatedAt: now,
+    rev: current.rev + 1
+  };
+  list[index] = note;
+  return { notes: list, note, created: false };
 }
 
 /** 文件字节上限检查；store 写完前调用。 */

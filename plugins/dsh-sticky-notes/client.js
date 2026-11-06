@@ -78,6 +78,12 @@ window.__ModuleLoader__.load({
       "page.titlePlaceholder": "标题",
       "page.bodyPlaceholder": "正文（Markdown 原文）",
       "page.settings": "设置",
+      "page.status": "状态",
+      "page.status.open": "待办",
+      "page.status.doing": "进行中",
+      "page.status.done": "已完成",
+      "page.board": "公告",
+
       "set.dock": "用量栏入口",
       "set.dock.desc": "在输入框下面显示「便签」",
       "set.click": "点用量栏「便签」时",
@@ -154,6 +160,12 @@ window.__ModuleLoader__.load({
       "page.newLabel": "New note",
       "page.writing": "Writing to: {where}",
       "page.settings": "Settings",
+      "page.status": "Status",
+      "page.status.open": "Open",
+      "page.status.doing": "Doing",
+      "page.status.done": "Done",
+      "page.board": "Board",
+
       "set.dock": "Composer dock chip",
       "set.dock.desc": "Show Sticky notes under the composer",
       "set.click": "Clicking the dock chip",
@@ -725,6 +737,16 @@ window.__ModuleLoader__.load({
   display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;white-space:pre-wrap;
 }
 .dsh-notes-card-meta{flex:none;font-size:11px;line-height:16px;color:var(--dsw-alias-label-dimmed,rgba(127,127,127,.78));font-variant-numeric:tabular-nums}
+.dsh-notes-status-dot{flex:none;width:7px;height:7px;border-radius:50%;margin-top:6px;background:var(--dsw-alias-state-idle-primary,rgba(127,127,127,.6))}
+.dsh-notes-status-dot[data-status="doing"]{background:var(--dsw-alias-brand-primary,#5686fe)}
+.dsh-notes-status-dot[data-status="done"]{background:var(--dsw-alias-state-success-primary,#2ea043)}
+.dsh-notes-flag{
+  flex:none;font-size:10px;line-height:15px;padding:0 5px;border-radius:5px;
+  background:var(--dsw-alias-bg-layer-2,rgba(127,127,127,.16));
+  color:var(--dsw-alias-label-secondary,rgba(96,98,104,.98));white-space:nowrap;
+}
+.dsh-notes-card[data-kind="board"]{border-left:3px solid var(--dsw-alias-brand-primary,#5686fe)}
+.dsh-notes-status-pills{display:flex;gap:4px;margin-right:auto}
 .dsh-notes-editor{display:flex;flex-direction:column;gap:8px;padding-top:4px}
 .dsh-notes-editor-foot{display:flex;align-items:center;gap:8px}
 .dsh-notes-editor-foot .dsh-notes-status{margin-right:auto}
@@ -1219,7 +1241,7 @@ window.__ModuleLoader__.load({
 
       return h(
         "div",
-        { className: "dsh-notes-card", "data-open": open ? "true" : "false" },
+        { className: "dsh-notes-card", "data-open": open ? "true" : "false", "data-kind": note.kind === "board" ? "board" : "note" },
         h(
           "button",
           {
@@ -1228,11 +1250,19 @@ window.__ModuleLoader__.load({
             onClick: () => onToggle(note.no),
             "aria-expanded": open ? "true" : "false"
           },
+          h("span", { className: "dsh-notes-status-dot", "data-status": note.status ?? "open", title: t(`page.status.${note.status ?? "open"}`) }),
           h("span", { className: "dsh-notes-no", title: t("page.copyNo", { n: note.no }) }, `#${note.no}`),
           h(
             "span",
             { className: "dsh-notes-card-text" },
-            h("span", { className: "dsh-notes-card-title" }, note.title === "" ? t("page.untitled") : note.title),
+            h(
+              "span",
+              { className: "dsh-notes-card-title" },
+              note.title === "" ? t("page.untitled") : note.title,
+              note.kind === "board" ? h("span", { className: "dsh-notes-flag", style: { marginLeft: "6px" } }, t("page.board")) : null,
+              note.topic !== undefined && note.topic !== "" ? h("span", { className: "dsh-notes-flag", style: { marginLeft: "6px" } }, note.topic) : null,
+              note.owner !== undefined && note.owner !== "" ? h("span", { className: "dsh-notes-flag", style: { marginLeft: "6px" } }, `@${note.owner}`) : null
+            ),
             String(note.body ?? "") === "" ? null : h("span", { className: "dsh-notes-card-preview" }, previewOf(note.body, 180))
           ),
           h(
@@ -1274,6 +1304,25 @@ window.__ModuleLoader__.load({
               h(
                 "div",
                 { className: "dsh-notes-editor-foot" },
+                h(
+                  "div",
+                  { className: "dsh-notes-status-pills", role: "radiogroup", "aria-label": t("page.status") },
+                  ...["open", "doing", "done"].map((value) =>
+                    h(
+                      "button",
+                      {
+                        key: value,
+                        type: "button",
+                        className: "dsh-notes-pill",
+                        "data-on": (note.status ?? "open") === value ? "true" : "false",
+                        onClick: () => {
+                          void saveNote(workspace, { no: note.no, status: value });
+                        }
+                      },
+                      t(`page.status.${value}`)
+                    )
+                  )
+                ),
                 h(
                   "span",
                   { className: "dsh-notes-status", "data-kind": status === "error" ? "error" : undefined },

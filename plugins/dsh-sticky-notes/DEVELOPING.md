@@ -62,8 +62,17 @@
 便签对象：
 
 ```js
-{ no: 3, id: "uuid", title: "…", body: "markdown", createdAt, updatedAt, rev: 2 }
+{ no: 3, id: "uuid", title: "…", body: "markdown",
+  status: "open" | "doing" | "done", owner: "session-…", topic: "TV0004",
+  updatedBy: "session-…", kind: "" | "board",
+  createdAt, updatedAt, rev: 2 }
 ```
+
+- `status` / `owner` 是跨会话交接用的：`status=doing` + `owner` 就是「轮到谁」。
+- `topic` 是工作区内的二级分类（比如 `TV0004`），便签页上按它分组/显示。
+- `updatedBy` 是最后写它的会话（取 session id 后 8 位），append 也会更新它。
+- `kind: "board"` 是每个工作区那张「公告栏」便签：一行一条 `- [HH:MM] @会话 内容`，
+  由 `action=board` 创建/追加，最多留 80 行（自动裁剪）。它是给人看的对话流，不是任务本身。
 
 编号规则：
 - 新建时取 `max(现有最大号, 文件头 lastNo) + 1`。`lastNo` 是高水位，写在文件头元数据里，
@@ -123,6 +132,8 @@
   也别让 `no: ""` 悄悄新建一张副本。
 - `list` 有 `limit`（默认 50，上限 200）和 `offset`，返回里带 `total`；offset 越界时说
   「有 N 张，offset 越界」，不能报「没有便签」。
+- `status` 动作用来交接：`{ no, status?, owner? }`；`write` 也能带 status/owner/topic。
+- `board` 动作往公告栏追加一行（没有就建一张），正文当作一条消息，换行会被压成一行。
 - `read` 把正文截到 4 万字符再给模型（外部撑大的文件不该整段进上下文）。
 - `write` 一个字段都不给（`{no:1}`）直接报 `sticky/invalid`：否则 rev 白涨一次、给别的编辑器
   制造假冲突。`baseRev` 传了非整数也报错，不许当缺省处理。

@@ -18,8 +18,10 @@ import { basename, dirname, join, resolve } from "node:path";
 import {
   NotesError,
   applyAppend,
+  applyBoardPost,
   applyRemove,
   applySave,
+  applyStatus,
   assertFileSize,
   parseNotesFile,
   serializeNotesFile
@@ -238,7 +240,12 @@ export function createWorkspaceStore(options) {
       return exclusive(fileForWorkspace(dir, target), async () => {
         const { file, current, parsed } = await load(target);
         const now = new Date().toISOString();
-        const result = applySave(parsed.notes, note, { now, newId: () => randomUUID(), lastNo: parsed.meta.lastNo });
+        const result = applySave(parsed.notes, note, {
+          now,
+          newId: () => randomUUID(),
+          lastNo: parsed.meta.lastNo,
+          by: options.by
+        });
         const text = serializeNotesFile(result.notes, parsed.preamble, {
           workspace: target,
           title: displayTitle || parsed.meta.title,
@@ -253,12 +260,12 @@ export function createWorkspaceStore(options) {
     },
 
     /** 往某张便签末尾追加正文。 */
-    append(workspace, no, text) {
+    append(workspace, no, text, options = {}) {
       const target = String(workspace ?? "").trim();
       return exclusive(fileForWorkspace(dir, target), async () => {
         const { file, current, parsed } = await load(target);
         const now = new Date().toISOString();
-        const result = applyAppend(parsed.notes, no, text, { now });
+        const result = applyAppend(parsed.notes, no, text, { now, by: options.by });
         const next = serializeNotesFile(result.notes, parsed.preamble, {
           workspace: target,
           title: parsed.meta.title,
@@ -268,6 +275,52 @@ export function createWorkspaceStore(options) {
         return {
           note: result.note,
           ...group(target, parsed.meta.title, { notes: result.notes }, file, revisionOf(next, true), true)
+        };
+      });
+    },
+
+    /** 改状态 / 接手人（跨会话交接）。 */
+    status(workspace, no, patch, options = {}) {
+      const target = String(workspace ?? "").trim();
+      return exclusive(fileForWorkspace(dir, target), async () => {
+        const { file, parsed } = await load(target);
+        const now = new Date().toISOString();
+        const result = applyStatus(parsed.notes, no, patch, { now, by: options.by });
+        const text = serializeNotesFile(result.notes, parsed.preamble, {
+          workspace: target,
+          title: options.title || parsed.meta.title,
+          lastNo: parsed.meta.lastNo
+        });
+        await writeAtomic(file, text);
+        return {
+          note: result.note,
+          ...group(target, options.title || parsed.meta.title, { notes: result.notes }, file, revisionOf(text, true), true)
+        };
+      });
+    },
+
+    /** 往公告栏追加一行（没有就建）。 */
+    board(workspace, body, options = {}) {
+      const target = String(workspace ?? "").trim();
+      return exclusive(fileForWorkspace(dir, target), async () => {
+        const { file, parsed } = await load(target);
+        const now = new Date().toISOString();
+        const result = applyBoardPost(parsed.notes, body, {
+          now,
+          by: options.by,
+          newId: () => randomUUID(),
+          lastNo: parsed.meta.lastNo
+        });
+        const text = serializeNotesFile(result.notes, parsed.preamble, {
+          workspace: target,
+          title: options.title || parsed.meta.title,
+          lastNo: parsed.meta.lastNo
+        });
+        await writeAtomic(file, text);
+        return {
+          note: result.note,
+          created: result.created === true,
+          ...group(target, options.title || parsed.meta.title, { notes: result.notes }, file, revisionOf(text, true), true)
         };
       });
     },

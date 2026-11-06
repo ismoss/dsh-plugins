@@ -273,9 +273,13 @@ function toolRender(args, value) {
     if (result.notes.length === 0) {
       return [{ type: "text", text: `${where} has ${total0} notes, but offset ${result.offset ?? 0} is past the end` }];
     }
-    const lines = result.notes.map((note) =>
-      [`#${note.no} ${note.title === "" ? "(untitled)" : note.title}`, note.preview].filter(Boolean).join(" — ")
-    );
+    const lines = result.notes.map((note) => {
+      const flags = [note.status, note.owner === "" ? "" : `@${note.owner}`, note.topic === "" ? "" : `#${note.topic}`]
+        .filter(Boolean)
+        .join(" ");
+      const head = `#${note.no} ${note.title === "" ? "(untitled)" : note.title}${flags === "" ? "" : ` [${flags}]`}`;
+      return [head, note.preview].filter(Boolean).join(" — ");
+    });
     const total = Number.isInteger(result.total) ? result.total : result.notes.length;
     const shown = result.notes.length;
     const more = total > shown ? [`… ${shown} of ${total} notes; call list with offset=${(result.offset ?? 0) + shown} for the rest`] : [];
@@ -299,8 +303,8 @@ function createToolDefinition(ctx, store) {
     properties: {
       action: {
         type: "string",
-        enum: ["list", "read", "write", "append", "delete"],
-        description: "What to do. list: notes of the workspace. read: one note in full. write: create a note (no omitted) or change title/body of note `no`. append: add body text at the end of note `no`. delete: remove note `no`."
+        enum: ["list", "read", "write", "append", "status", "board", "delete"],
+        description: "What to do. list: notes of the workspace. read: one note in full. write: create a note (no omitted) or change title/body/status/owner/topic of note `no`. append: add body text at the end of note `no`. status: hand a note over — set its status (open/doing/done) and/or owner. board: post one line to the workspace's shared board note. delete: remove note `no`."
       },
       no: {
         type: "integer",
@@ -312,7 +316,20 @@ function createToolDefinition(ctx, store) {
       },
       body: {
         type: "string",
-        description: "Markdown of the note body. write replaces the body; append adds it at the end with a blank line between."
+        description: "Markdown of the note body. write replaces the body; append adds it at the end with a blank line between; board treats it as one line of news."
+      },
+      status: {
+        type: "string",
+        enum: ["open", "doing", "done"],
+        description: "Note state. open: not started. doing: someone is on it. done: finished. Set it through write or status."
+      },
+      owner: {
+        type: "string",
+        description: "Who should act next, e.g. a session id or a short name. Hand a note over by setting owner together with status=doing."
+      },
+      topic: {
+        type: "string",
+        description: "Short issue label used to group notes in one workspace, e.g. TV0004."
       },
       workspace: {
         type: "string",
@@ -351,6 +368,7 @@ function createToolDefinition(ctx, store) {
     async execute(args, exec) {
       const input = isRecord(args) ? args : {};
       const action = text(input.action);
+      const by = typeof exec?.agent?.id === "string" ? exec.agent.id.slice(-8) : "";
       let workspace = text(input.workspace);
       let workspaceTitle = "";
       if (workspace === "") {
@@ -394,8 +412,13 @@ function createToolDefinition(ctx, store) {
             notes: page.map((note) => ({
               no: note.no,
               title: note.title,
+              status: note.status,
+              owner: note.owner,
+              topic: note.topic,
+              kind: note.kind,
               chars: note.body.length,
               updatedAt: note.updatedAt,
+              updatedBy: note.updatedBy,
               preview: previewOf(note.body, 80)
             }))
           };
@@ -419,11 +442,18 @@ function createToolDefinition(ctx, store) {
         }
         case "write": {
           const no = noteNumber(input.no, { required: false });
-          const result = await store.save(workspace, {
-            no: no ?? undefined,
-            title: typeof input.title === "string" ? input.title : undefined,
-            body: typeof input.body === "string" ? input.body : undefined
-          });
+          const result = await store.save(
+            workspace,
+            {
+              no: no ?? undefined,
+              title: typeof input.title === "string" ? input.title : undefined,
+              body: typeof input.body === "string" ? input.body : undefined,
+              status: typeof input.status === "string" ? input.status : undefined,
+              owner: typeof input.owner === "string" ? input.owner : undefined,
+              topic: typeof input.topic === "string" ? input.topic : undefined
+            },
+            { by, title: workspaceTitle }
+          );
           return {
             workspace,
             no: result.note.no,
@@ -433,8 +463,39 @@ function createToolDefinition(ctx, store) {
         }
         case "append": {
           const no = noteNumber(input.no);
-          const result = await store.append(workspace, no, input.body);
+          const result = await store.append(workspace, no, input.body, { by });
           return { workspace, no: result.note.no, title: result.note.title, chars: result.note.body.length };
+        }
+        case "status": {
+          const no = noteNumber(input.no);
+          if (typeof input.status !== "string" && typeof input.owner !== "string") {
+            throw new NotesError("sticky/invalid", "status needs a status and/or an owner", { field: "status" });
+          }
+          const result = await store.status(
+            workspace,
+            no,
+            {
+              status: typeof input.status === "string" ? input.status : undefined,
+              owner: typeof input.owner === "string" ? input.owner : undefined
+            },
+            { by, title: workspaceTitle }
+          );
+          return {
+            workspace,
+            no: result.note.no,
+            title: result.note.title,
+            status: result.note.status,
+            owner: result.note.owner
+          };
+        }
+        case "board": {
+          const result = await store.board(workspace, input.body, { by, title: workspaceTitle });
+          return {
+            workspace,
+            no: result.note.no,
+            created: result.created === true,
+            status: result.note.status
+          };
         }
         case "delete": {
           const no = noteNumber(input.no);
