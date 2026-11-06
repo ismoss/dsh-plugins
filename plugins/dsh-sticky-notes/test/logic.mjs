@@ -123,7 +123,7 @@ await test("save: create assigns next number, update keeps it", () => {
   assert.equal(updated.notes.find((note) => note.no === 1).rev, 2);
 });
 
-await test("save: no reuses a freed number only when it is the max", () => {
+await test("save: a new note never reuses a deleted number", () => {
   let notes = applySave([], { title: "a", body: "a" }, cond).notes;
   notes = applySave(notes, { title: "b", body: "b" }, cond).notes;
   notes = applySave(notes, { title: "c", body: "c" }, cond).notes;
@@ -368,18 +368,31 @@ await test("parse: CR-only files still split into notes", () => {
   assert.match(notes[0].body, /body/);
 });
 
-await test("titles: truncation does not split an emoji", () => {
+await test("titles: 200 emoji survive a full save→parse round trip", () => {
   const long = "😀".repeat(250);
   const notes = applySave([], { title: long, body: "x" }, cond).notes;
-  assert.equal(Array.from(notes[0].title).length, 200);
-  assert.equal(notes[0].title.includes("\uFFFD"), false);
+  const text = serializeNotesFile(notes, "# 便签", { workspace: "E:\\w" });
+  const round = parseNotesFile(text).notes;
+  assert.equal(round.length, 1);
+  assert.equal(Array.from(round[0].title).length, 200, "往返后仍是 200 个 code point");
+  assert.equal(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(round[0].title), false, "没有落单代理");
+  // 再存一次：文件里不能出现 U+FFFD
+  const again = serializeNotesFile(round, "# 便签", { workspace: "E:\\w" });
+  assert.equal(again.includes("\uFFFD"), false);
 });
 
-await test("save: an empty title on a partial update keeps the current one", () => {
+await test("save: an explicit empty title clears it, an omitted one keeps it", () => {
   const notes = applySave([], { title: "原标题", body: "x" }, cond).notes;
-  const updated = applySave(notes, { no: 1, title: "", body: "y" }, cond);
-  assert.equal(updated.note.title, "原标题");
-  assert.equal(updated.note.body, "y");
+  // 显式传 "" = 清空（文件里写成 "## 1."，能原样读回来）
+  const cleared = applySave(notes, { no: 1, title: "" }, cond);
+  assert.equal(cleared.note.title, "");
+  const roundTrip = parseNotesFile(serializeNotesFile(cleared.notes, "# 便签", { workspace: "E:\\w" })).notes;
+  assert.equal(roundTrip.length, 1);
+  assert.equal(roundTrip[0].title, "");
+  // 不传 title = 保持
+  const kept = applySave(notes, { no: 1, body: "y" }, cond);
+  assert.equal(kept.note.title, "原标题");
+  assert.equal(kept.note.body, "y");
 });
 
 await test("store: a non-UTF-8 file is refused instead of being rewritten", async () => {
@@ -419,6 +432,116 @@ await test("store: lastNo survives a reload so numbering keeps going up", async 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+await test("parse: U+2028 / U+2029 in a title do not swallow the note", () => {
+  const saved = applySave([], { title: "a\u2028b\u2029c", body: "x" }, cond);
+  assert.equal(saved.note.title, "a b c");
+  const text = serializeNotesFile(saved.notes, "# 便签", { workspace: "E:\\w" });
+  const round = parseNotesFile(text).notes;
+  assert.equal(round.length, 1);
+  assert.equal(round[0].title, "a b c");
+});
+
+await test("parse: deleting every note keeps lastNo and the group", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "dsh-sticky-"));
+  try {
+    const store = createWorkspaceStore({ dir });
+    await store.save("E:\\w", { title: "only", body: "x" }, { title: "w" });
+    const removed = await store.remove("E:\\w", 1, null);
+    assert.equal(removed.notes.length, 0);
+    // 文件还在、元数据还在：分组不能消失
+    const groups = await store.groups();
+    assert.equal(groups.length, 1);
+    assert.equal(groups[0].count, 0);
+    // 高水位不能丢：下一张是 2 号
+    const next = await store.save("E:\\w", { title: "second", body: "y" });
+    assert.equal(next.note.no, 2);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+await test("numbers: an unnumbered note never takes a retired number", () => {
+  // 有高水位（删过号）的文件里，手加的无号便签补到高水位之后
+  const text = [
+    "# 便签",
+    "",
+    '<!-- dsh-sticky-notes:v2 {"workspace":"E:\\\\w","lastNo":3} -->',
+    "",
+    "## 1. A",
+    "a",
+    "",
+    "## 3. C",
+    "c",
+    "",
+    "## 新来的",
+    "n"
+  ].join("\n");
+  const notes = parseNotesFile(text).notes;
+  assert.deepEqual(
+    notes.map((note) => note.no),
+    [1, 3, 4]
+  );
+});
+
+await test("save: a write with no fields is rejected instead of bumping rev", () => {
+  const notes = applySave([], { title: "t", body: "b" }, cond).notes;
+  assert.throws(
+    () => applySave(notes, { no: 1 }, cond),
+    (error) => error.code === "sticky/invalid"
+  );
+});
+
+await test("save: a non-integer baseRev is rejected, not treated as missing", () => {
+  const notes = applySave([], { title: "t", body: "b" }, cond).notes;
+  assert.throws(
+    () => applySave(notes, { no: 1, body: "x", baseRev: "1" }, cond),
+    (error) => error.code === "sticky/invalid"
+  );
+});
+
+await test("remove: a stale baseRev conflicts", () => {
+  const notes = applySave([], { title: "t", body: "b" }, cond).notes;
+  assert.throws(
+    () => applyRemove(notes, 1, 99),
+    (error) => error.code === "sticky/conflict"
+  );
+});
+
+await test("numbers: an absurd number is ignored instead of hanging", () => {
+  const text = ["# 便签", "", "## 9007199254740993. huge", "x", "", "## 9007199254740993. huge2", "y"].join("\n");
+  const notes = parseNotesFile(text).notes;
+  // 超过上界的号当作没编号，重新分配；关键是必须返回（不能死循环）
+  assert.equal(notes.length, 2);
+  assert.ok(notes.every((note) => Number.isSafeInteger(note.no)));
+});
+
+await test("workspace keys: path spellings collapse, same-slug dirs stay apart", () => {
+  const dir = "C:\\notes";
+  assert.equal(fileForWorkspace(dir, "E:\\Repo\\."), fileForWorkspace(dir, "E:\\Repo"));
+  assert.notEqual(fileForWorkspace(dir, "E:\\a\\repo"), fileForWorkspace(dir, "E:\\b\\repo"));
+});
+
+await test("store: concurrent saves on one workspace keep every note", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "dsh-sticky-"));
+  try {
+    const store = createWorkspaceStore({ dir });
+    await Promise.all([
+      store.save("E:\\w", { title: "a", body: "1" }),
+      store.save("E:\\w", { title: "b", body: "2" }),
+      store.save("E:\\w", { title: "c", body: "3" })
+    ]);
+    const group = await store.list("E:\\w");
+    assert.equal(group.notes.length, 3);
+    assert.deepEqual(
+      group.notes.map((note) => note.no).sort((left, right) => left - right),
+      [1, 2, 3]
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 if (failed > 0) {
   console.error(`${failed} test(s) failed`);
   process.exit(1);

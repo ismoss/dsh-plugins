@@ -19,11 +19,11 @@
 
 import { appendFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 
 import { NotesError, previewOf } from "./notes.js";
 import { createWorkspaceStore, workspaceKey } from "./store.js";
-import { resolveWorkspace } from "./workspace.js";
+import { baseTitle, resolveWorkspace } from "./workspace.js";
 
 const NS = "dsh-sticky-notes";
 const ROUTE = "/api/sticky-notes";
@@ -64,6 +64,14 @@ function resolveDir() {
   return { dir: join(homedir(), ".dsh", "sticky-notes"), displayDir: "~/.dsh/sticky-notes" };
 }
 
+/** 有 ctx.effect 就交给它管生命周期（禁用插件时撤掉路由/工具），没有就直接注册。 */
+function asEffect(context, factory, label) {
+  if (context !== null && context !== undefined && typeof context.effect === "function") {
+    return context.effect(factory, label);
+  }
+  return factory();
+}
+
 function ok(value) {
   return { ok: true, value };
 }
@@ -82,7 +90,7 @@ function text(value) {
 
 /** 工具参数里的编号：数字或数字字符串都收，其他一律报错（别把 "3" 当成没传）。 */
 function noteNumber(value, { required = true } = {}) {
-  if (value === undefined || value === null || value === "") {
+  if (value === undefined || value === null) {
     if (!required) return null;
     throw new NotesError("sticky/invalid", "no is required for this action", { field: "no" });
   }
@@ -94,8 +102,7 @@ function noteNumber(value, { required = true } = {}) {
 }
 
 function titleOfPath(path) {
-  const base = basename(String(path ?? "").replace(/[\\/]+$/, ""));
-  return base === "" ? String(path ?? "") : base;
+  return baseTitle(path);
 }
 
 /**
@@ -160,7 +167,18 @@ async function dispatch(ctx, store, method, payload) {
     /** 请求指定了 workspace 就用它；否则按会话解析出它所属的工作区。 */
     async function target() {
       const given = text(body.workspace);
-      if (given !== "") return { path: given, title: titleFor(ctx, given) };
+      if (given !== "") {
+        let canonical = given;
+        try {
+          const resolved = await workspaceDeps(ctx).resolveByPath(given);
+          if (resolved !== undefined && resolved !== null && typeof resolved.path === "string" && resolved.path !== "") {
+            canonical = resolved.path;
+          }
+        } catch {
+          /* 目录不存在就按原样用，写的时候自然会建 */
+        }
+        return { path: canonical, title: titleFor(ctx, canonical) };
+      }
       const workspace = await workspaceOf(ctx, sessionId);
       return { path: workspace.path, title: workspace.title };
     }
@@ -194,7 +212,7 @@ async function dispatch(ctx, store, method, payload) {
         const resolved = await target();
         if (resolved.path === "") return fail("sticky/invalid", "save needs a workspace", { field: "workspace" });
         const note = isRecord(body.note) ? body.note : body;
-        const result = await store.save(resolved.path, note);
+        const result = await store.save(resolved.path, note, { title: resolved.title });
         return ok({ ...result, workspace: resolved.path, title: resolved.title || result.title });
       }
       case "append": {
@@ -250,7 +268,11 @@ function toolRender(args, value) {
   const result = isRecord(value) ? value : {};
   if (Array.isArray(result.notes)) {
     const where = [String(result.title ?? ""), String(result.workspace ?? "")].filter(Boolean).join(" · ");
-    if (result.notes.length === 0) return [{ type: "text", text: `no notes in ${where}` }];
+    const total0 = Number.isInteger(result.total) ? result.total : result.notes.length;
+    if (result.notes.length === 0 && total0 === 0) return [{ type: "text", text: `no notes in ${where}` }];
+    if (result.notes.length === 0) {
+      return [{ type: "text", text: `${where} has ${total0} notes, but offset ${result.offset ?? 0} is past the end` }];
+    }
     const lines = result.notes.map((note) =>
       [`#${note.no} ${note.title === "" ? "(untitled)" : note.title}`, note.preview].filter(Boolean).join(" — ")
     );
@@ -385,7 +407,15 @@ function createToolDefinition(ctx, store) {
           if (note === undefined) {
             throw new NotesError("sticky/not-found", `note #${String(no)} does not exist`, { no });
           }
-          return { workspace, no: note.no, title: note.title, body: note.body, updatedAt: note.updatedAt };
+          const MAX_READ = 40000;
+          const tooLong = note.body.length > MAX_READ;
+          return {
+            workspace,
+            no: note.no,
+            title: note.title,
+            body: tooLong ? `${note.body.slice(0, MAX_READ)}\n\n… truncated (${note.body.length} chars total)` : note.body,
+            updatedAt: note.updatedAt
+          };
         }
         case "write": {
           const no = noteNumber(input.no, { required: false });
@@ -440,12 +470,13 @@ export function apply(ctx) {
       return;
     }
     try {
-      connection.fetch.register({
-        path: ROUTE,
-        methods: ["POST"],
-        requestBody: "buffered",
-        fetch: (request) => handleFetch(ctx, store, request)
-      });
+      asEffect(inner, () =>
+        connection.fetch.register({
+          path: ROUTE,
+          methods: ["POST"],
+          requestBody: "buffered",
+          fetch: (request) => handleFetch(ctx, store, request)
+        }), "sticky-notes fetch route");
       debug("fetch route registered");
     } catch (error) {
       debug(`fetch route registration failed: ${error?.message ?? String(error)}`);
@@ -460,7 +491,7 @@ export function apply(ctx) {
       return;
     }
     try {
-      tools.register(createToolDefinition(ctx, store));
+      asEffect(inner, () => tools.register(createToolDefinition(ctx, store)), "sticky-notes tool");
       debug("tool registered");
     } catch (error) {
       debug(`tool registration failed: ${error?.message ?? String(error)}`);

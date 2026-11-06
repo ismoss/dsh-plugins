@@ -12,8 +12,8 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import { copyFile, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { copyFile, mkdir, open, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 
 import {
   NotesError,
@@ -45,16 +45,32 @@ function slugOf(value) {
  * 归一化成「正斜杠 + 小写 + 无尾分隔符」。
  */
 export function workspaceKey(path) {
-  const text = String(path ?? "")
-    .trim()
-    .replace(/\\/g, "/")
-    .replace(/\/+$/, "");
-  return text.toLowerCase();
+  const raw = String(path ?? "").trim();
+  // 先做路径归一：`E:\Repo\.` / `E:/Repo/` 和 `E:\Repo` 必须是同一把钥匙，
+  // 否则同一个工作区会裂成两份文件、两个分组。
+  let normalized = raw;
+  try {
+    normalized = resolve(raw);
+  } catch {
+    normalized = raw;
+  }
+  const text = normalized.replace(/\\/g, "/").replace(/\/+$/, "");
+  // 只有大小写不敏感的文件系统才折叠大小写：Linux 上 /a/App 与 /a/app 是两个真实目录。
+  return process.platform === "linux" ? text : text.toLowerCase();
 }
 
 export function fileForWorkspace(dir, path) {
-  const text = String(path ?? "");
-  return join(dir, `${slugOf(basename(text.replace(/[\\/]+$/, "")) || text)}-${hashOf(workspaceKey(text))}${FILE_SUFFIX}`);
+  const raw = String(path ?? "");
+  // slug 和 hash 都要来自归一化后的路径，否则 `E:\Repo\.` 会得到 "ws-<同一 hash>"，
+  // 和工作区本身的 "repo-<同一 hash>" 变成两个文件。
+  let canonical = raw;
+  try {
+    canonical = resolve(raw);
+  } catch {
+    canonical = raw;
+  }
+  const base = basename(canonical.replace(/[\\/]+$/, ""));
+  return join(dir, `${slugOf(base)}-${hashOf(workspaceKey(raw))}${FILE_SUFFIX}`);
 }
 
 function revisionOf(text, exists) {
@@ -120,7 +136,13 @@ export function createWorkspaceStore(options) {
     const temporary = join(directory, `.${basename(file)}.${process.pid}.${randomUUID()}.tmp`);
     try {
       await mkdir(directory, { recursive: true });
-      await writeFile(temporary, text, "utf8");
+      const handle = await open(temporary, "w");
+      try {
+        await handle.writeFile(text, "utf8");
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
       try {
         await rename(temporary, file);
         return;
@@ -130,7 +152,8 @@ export function createWorkspaceStore(options) {
         // 退化路径不原子：先把现有内容留一份 .bak，直写失败时 temp 也留着（里面是新内容）。
         await copyFile(file, `${file}.bak`).catch(() => undefined);
         await writeFile(file, text, "utf8");
-        await rm(temporary, { force: true });
+        // 临时文件删不掉不算失败：正文已经落盘了，报错只会让用户重试、重复追加。
+        await rm(temporary, { force: true }).catch(() => undefined);
       }
     } catch (error) {
       throw ioError(error, file);
@@ -190,6 +213,8 @@ export function createWorkspaceStore(options) {
       const groups = [];
       for (const file of files) {
         try {
+          // 走同一条队列：退化直写期间读到半截文件会让计数和分组错乱。
+          await exclusive(file, () => Promise.resolve());
           const current = await readFileIfExists(file);
           const parsed = parseNotesFile(current.text);
           const workspace = parsed.meta.workspace;
@@ -207,21 +232,22 @@ export function createWorkspaceStore(options) {
     },
 
     /** 新建或修改。`note` 里带 `no` 就是改，不带就是新建。 */
-    save(workspace, note) {
+    save(workspace, note, options = {}) {
       const target = String(workspace ?? "").trim();
+      const displayTitle = typeof options.title === "string" ? options.title : "";
       return exclusive(fileForWorkspace(dir, target), async () => {
         const { file, current, parsed } = await load(target);
         const now = new Date().toISOString();
         const result = applySave(parsed.notes, note, { now, newId: () => randomUUID(), lastNo: parsed.meta.lastNo });
         const text = serializeNotesFile(result.notes, parsed.preamble, {
           workspace: target,
-          title: parsed.meta.title,
+          title: displayTitle || parsed.meta.title,
           lastNo: parsed.meta.lastNo
         });
         await writeAtomic(file, text);
         return {
           note: result.note,
-          ...group(target, parsed.meta.title, { notes: result.notes }, file, revisionOf(text, true), true)
+          ...group(target, displayTitle || parsed.meta.title, { notes: result.notes }, file, revisionOf(text, true), true)
         };
       });
     },

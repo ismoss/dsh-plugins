@@ -24,10 +24,13 @@
 export const MAX_TITLE = 200;
 export const MAX_BODY = 40000;
 export const MAX_NOTES = 500;
+/** 编号上界：再大就没有意义，而且 2^53 附近 cursor+=1 会不前进（Host 卡死）。 */
+export const MAX_NOTE_NUMBER = 1000000000;
+
 /** 单文件上限；防止一次读取把几十 MB 塞进浏览器或工具结果。 */
 export const MAX_FILE_BYTES = 4 * 1024 * 1024;
 
-const HEADING = /^##\s+(?:(\d+)\.\s+)?(.*)$/;
+const HEADING = /^##\s+(?:(\d+)\.(?=\s|$)\s*)?(.*)$/;
 const META_LINE = /^<!--\s*dsh-note:\s*(\{.*\})\s*-->\s*$/;
 const PREAMBLE_META = /^<!--\s*dsh-sticky-notes:v2\s*(\{.*\})\s*-->\s*$/;
 const NOTE_ID = /^[A-Za-z0-9_-]{1,64}$/;
@@ -46,6 +49,14 @@ function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+/** 标题只能是单行： 
+ 以及 U+2028 / U+2029 一律压成空格。 */
+function oneLine(value) {
+  return String(value ?? "")
+    .replace(/[\r\n\u2028\u2029]+/g, " ")
+    .trim();
+}
+
 function isoOrEmpty(value) {
   if (typeof value !== "string" || value.length === 0) return "";
   const time = Date.parse(value);
@@ -54,7 +65,7 @@ function isoOrEmpty(value) {
 }
 
 function positiveInt(value) {
-  return Number.isInteger(value) && value >= 1 ? value : 0;
+  return Number.isInteger(value) && value >= 1 && value <= MAX_NOTE_NUMBER ? value : 0;
 }
 
 /** FNV-1a 32 位；只用来给没有元数据的外部便签派生一个稳定 id。 */
@@ -77,7 +88,7 @@ export function previewOf(body, max = 140) {
 
 function makeNote(raw) {
   const source = isRecord(raw) ? raw : {};
-  const title = typeof source.title === "string" ? source.title.replace(/[\r\n]+/g, " ").trim() : "";
+  const title = typeof source.title === "string" ? oneLine(source.title) : "";
   const body = typeof source.body === "string" ? source.body.replace(/\r\n?/g, "\n").replace(/\s+$/, "") : "";
   return {
     no: positiveInt(source.no),
@@ -110,8 +121,10 @@ function assignNumbers(notes, lastNo = 0) {
     if (note.no > high) high = note.no;
   }
 
-  // 第二遍：手写时没编号的，从 1 起补空位——外部文件里第一张就是 1 号，符合直觉。
-  let cursor = 1;
+  // 第二遍：手写时没编号的补号。没有高水位（从没删过号）就从 1 起补空位，符合直觉；
+  // 有高水位的文件补到 high+1 之后，绝不捡「已退休」的号。
+  const retired = Number.isInteger(lastNo) && lastNo > 0;
+  let cursor = retired ? high + 1 : 1;
   for (const note of notes) {
     if (note.no !== 0 || duplicates.includes(note)) continue;
     while (used.has(cursor)) cursor += 1;
@@ -132,33 +145,17 @@ function assignNumbers(notes, lastNo = 0) {
   return notes;
 }
 
-/**
- * 解析一份便签文件。
- *
- * @param {string} text
- * @returns {{meta: {workspace: string, title: string}, preamble: string, notes: Array<object>}}
- */
-export function parseNotesFile(text) {
-  const source = typeof text === "string" ? text.replace(/^\uFEFF/, "") : "";
-  const lines = source.split(/\r\n?|\n/);
-  const firstHeading = lines.findIndex((line) => HEADING.test(line));
-  if (firstHeading < 0) {
-    return { meta: { workspace: "", title: "", lastNo: 0 }, preamble: source.replace(/\s+$/, ""), notes: [] };
-  }
-
-  const headLines = lines.slice(0, firstHeading);
-  const preamble = headLines.join("\n").replace(/\s+$/, "");
-  let meta = { workspace: "", title: "", lastNo: 0 };
-  for (const line of headLines) {
+function readPreambleMeta(lines) {
+  for (const line of lines) {
     const match = PREAMBLE_META.exec(line.trim());
     if (match === null) continue;
     try {
       const parsed = JSON.parse(match[1]);
       if (isRecord(parsed)) {
-        meta = {
+        return {
           workspace: typeof parsed.workspace === "string" ? parsed.workspace : "",
           title: typeof parsed.title === "string" ? parsed.title : "",
-          lastNo: Number.isInteger(parsed.lastNo) && parsed.lastNo > 0 ? parsed.lastNo : 0
+          lastNo: Number.isInteger(parsed.lastNo) && parsed.lastNo > 0 && parsed.lastNo <= MAX_NOTE_NUMBER ? parsed.lastNo : 0
         };
       }
     } catch {
@@ -166,6 +163,31 @@ export function parseNotesFile(text) {
     }
     break;
   }
+  return { workspace: "", title: "", lastNo: 0 };
+}
+
+/**
+ * 解析一份便签文件。
+ *
+ * @param {string} text
+ * @returns {{meta: {workspace: string, title: string, lastNo: number}, preamble: string, notes: Array<object>}}
+ */
+export function parseNotesFile(text) {
+  const source = typeof text === "string" ? text.replace(/^\uFEFF/, "") : "";
+  const lines = source.split(/\r\n?|\n/);
+  const firstHeading = lines.findIndex((line) => HEADING.test(line));
+  if (firstHeading < 0) {
+    // 删到最后一张也还有文件头：元数据必须照读，否则 lastNo 丢、分组跟着丢。
+    return {
+      meta: readPreambleMeta(lines),
+      preamble: source.replace(/\s+$/, ""),
+      notes: []
+    };
+  }
+
+  const headLines = lines.slice(0, firstHeading);
+  const preamble = headLines.join("\n").replace(/\s+$/, "");
+  const meta = readPreambleMeta(headLines);
 
   const notes = [];
   const usedIds = new Set();
@@ -194,15 +216,18 @@ export function parseNotesFile(text) {
       }
     }
 
-    const title = section.title.replace(/\s+$/, "").slice(0, MAX_TITLE);
+    // 标题按 code point 截断：按 UTF-16 单元切会把 emoji 切成半个代理，写盘就变 U+FFFD。
+    const title = Array.from(section.title.replace(/\s+$/, "")).slice(0, MAX_TITLE).join("");
     const body = bodyLines.join("\n").replace(/\s+$/, "");
-    if (title === "" && body === "") {
+    const headingNo = positiveInt(section.no);
+    if (title === "" && body === "" && headingNo === 0 && positiveInt(raw.no) === 0) {
+      // 完全空白、也没编号的分节是文件里的噪声，丢掉。
       section = null;
       return;
     }
 
     const note = makeNote({
-      no: positiveInt(section.no) || positiveInt(raw.no),
+      no: headingNo || positiveInt(raw.no),
       id: raw.id,
       title,
       body,
@@ -239,9 +264,9 @@ function demoteBodyHeadings(body) {
     .join("\n");
 }
 
+/** 标题写进文件时的形状：空标题写成空（`## 3.`），由解析侧还原成 ""；不做「未命名便签」的假标题。 */
 function titleForFile(title) {
-  const text = typeof title === "string" ? title.replace(/[\r\n]+/g, " ").trim() : "";
-  return text === "" ? "未命名便签" : Array.from(text).slice(0, MAX_TITLE).join("");
+  return typeof title === "string" ? Array.from(oneLine(title)).slice(0, MAX_TITLE).join("") : "";
 }
 
 const DEFAULT_PREAMBLE = "# 便签";
@@ -289,7 +314,8 @@ export function serializeNotesFile(notes, preamble, meta) {
       rev: note.rev
     };
     const body = note.body === "" ? "" : `${demoteBodyHeadings(note.body)}\n`;
-    return `## ${note.no}. ${titleForFile(note.title)}\n<!-- dsh-note: ${JSON.stringify(payload)} -->\n${body}`;
+    const heading = titleForFile(note.title);
+    return `## ${note.no}.${heading === "" ? "" : ` ${heading}`}\n<!-- dsh-note: ${JSON.stringify(payload)} -->\n${body}`;
   });
   return `${head}\n\n${blocks.join("\n")}`.replace(/\s+$/, "\n");
 }
@@ -308,7 +334,7 @@ export function normalizeInput(raw, options = {}) {
   const partial = options.partial === true;
   const hasTitle = typeof source.title === "string";
   const hasBody = typeof source.body === "string";
-  const title = hasTitle ? Array.from(source.title.replace(/[\r\n]+/g, " ").trim()).slice(0, MAX_TITLE).join("") : "";
+  const title = hasTitle ? Array.from(oneLine(source.title)).slice(0, MAX_TITLE).join("") : "";
   const body = hasBody ? source.body.replace(/\r\n?/g, "\n").replace(/\s+$/, "") : "";
 
   if (body.length > MAX_BODY) {
@@ -319,11 +345,6 @@ export function normalizeInput(raw, options = {}) {
   }
   if (!partial && title === "" && body.trim() === "") {
     throw new NotesError("sticky/invalid", "a new note needs a title or a body", { field: "title" });
-  }
-  if (hasTitle && !hasBody && partial && title === "") {
-    throw new NotesError("sticky/invalid", "a note title cannot be emptied while its body stays", {
-      field: "title"
-    });
   }
 
   const input = {};
@@ -336,6 +357,15 @@ export function normalizeInput(raw, options = {}) {
  * 下一个编号：取「现有最大号」和「高水位」的较大者 + 1。
  * 高水位写在文件头，所以删掉最大号再新建也不会复用——编号可以被 AI 长期引用。
  */
+/** baseRev：没传 = 不校验；传了就必须是整数（字符串 "3" 不能当成没传）。 */
+function readBaseRev(value) {
+  if (value === undefined || value === null) return null;
+  if (!Number.isInteger(value)) {
+    throw new NotesError("sticky/invalid", "baseRev must be an integer rev", { field: "baseRev" });
+  }
+  return value;
+}
+
 export function nextNumber(notes, lastNo = 0) {
   let max = Number.isInteger(lastNo) && lastNo > 0 ? lastNo : 0;
   for (const note of Array.isArray(notes) ? notes : []) {
@@ -378,9 +408,11 @@ export function applySave(notes, raw, options) {
     const index = noteByNumber(list, requested);
     const current = list[index];
     const input = normalizeInput(source, { partial: true });
-    // 局部更新里标题传空串多半是「我不改标题」，不是「把标题清成未命名便签」。
-    if (input.title === "") delete input.title;
-    const baseRev = Number.isInteger(source.baseRev) ? source.baseRev : null;
+    // 一个字段都没给就是无效更新：别把 rev 顶上去，给别的编辑器制造假冲突。
+    if (input.title === undefined && input.body === undefined) {
+      throw new NotesError("sticky/invalid", "write needs a title or a body to change", { field: "title" });
+    }
+    const baseRev = readBaseRev(source.baseRev);
     if (baseRev !== null && baseRev !== current.rev) {
       throw new NotesError("sticky/conflict", "the note changed after this editor read it", { current });
     }
@@ -451,7 +483,8 @@ export function applyRemove(notes, no, baseRev) {
   const list = Array.isArray(notes) ? notes.slice() : [];
   const index = noteByNumber(list, no);
   const removed = list[index];
-  if (Number.isInteger(baseRev) && baseRev !== removed.rev) {
+  const expected = readBaseRev(baseRev);
+  if (expected !== null && expected !== removed.rev) {
     throw new NotesError("sticky/conflict", "the note changed before it was deleted", { current: removed });
   }
   list.splice(index, 1);
