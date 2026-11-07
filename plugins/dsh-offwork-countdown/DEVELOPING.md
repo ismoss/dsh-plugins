@@ -21,7 +21,7 @@ keyed 座位用 `key` 而不是 `id`；`include:` 前缀两种写法都挂，防
 页面侧 `localStorage`，键见 `client.js` 的 `STORAGE_KEY`，Host 半不持有状态：
 
 ```js
-{ start, end, lunch, lunchStart, lunchEnd, morningLunch,
+{ start, end, lunch, lunchStart, lunchEnd, morningLunch, tailSecondsMinutes,
   timer, timerLabel, timerWarnMinutes, timerWarnColor,
   dock, dockSeconds, timerSeconds, floatSeconds,
   float, floatSide, dblclick, lastDrink, pos }
@@ -43,8 +43,13 @@ v3（计时文案存整句）的数据都能直接升级。
 - `timerElapsed()` 的基准是 `max(当天上班, 上次点击)`，上班前返回 `null`（不显示）。
 - `timerWarned(elapsed, settings)`：`timerWarnMinutes`（0 = 不提醒，上限 1440）乘以分钟数后与
   已过时长比较；到了就把胶囊的文字颜色换成 `timerWarnColor`（内联样式，默认 `#d97706`）。
-- 关秒只影响 `formatDuration(ms, false)` 的输出（`HH:MM`）；悬浮卡片同时收窄
-  （`floatWidth` → 190px）并把字号提到 46px，否则右边会空一块。
+- **倒计时向上取整，计时器向下取整**：`formatDuration(ms, withSeconds, roundUp)`。倒计时传
+  `roundUp = true` —— 还剩 7 秒按分钟向下取整会显示 `00:00`，看着像到点了；所以按「当前
+  显示的精度」进位（有秒进到秒，没秒进到分钟）。计时器（已过时长）不传，保持向下取整。
+- **最后 N 分钟临时显示秒**：`showsSeconds(configured, view, settings)`。座位自己的开关关掉后，
+  只要 `tailSecondsMinutes > 0` 且剩余时间进了这段区间，就重新逐秒跳；下班后的正计时不套用。
+  悬浮卡片宽度跟着**实际显不显示秒**走（`floatWidth(showSeconds)`），进区间会变宽一点。
+- 关秒后悬浮卡片同时收窄（`floatWidth(false)` → 190px）并把字号提到 46px，否则右边会空一块。
 
 ## 悬浮卡片的位置
 

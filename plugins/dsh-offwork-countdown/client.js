@@ -39,6 +39,7 @@ window.__ModuleLoader__.load({
       lunchStart: "12:00",
       lunchEnd: "13:00",
       morningLunch: false,
+      tailSecondsMinutes: 5,
       timer: true,
       timerLabel: "",
       timerWarnMinutes: 0,
@@ -112,6 +113,8 @@ window.__ModuleLoader__.load({
       "settings.morningTitle": "上午显示",
       "settings.morningLunch": "上午显示午饭倒计时",
       "settings.morningLunchDesc": "打开时上午显示「距午饭」，关闭时全天显示「距下班」。",
+      "settings.tailSeconds": "最后几分钟显示秒",
+      "settings.tailSecondsDesc": "关掉「显示秒」的位置，在最后这段时间里仍然逐秒跳动；填 0 表示不启用。",
       "settings.dock": "用量栏",
       "settings.dockDesc": "在输入框下方的用量栏里显示「距下班」一行。",
       "settings.seconds": "显示秒",
@@ -183,6 +186,8 @@ window.__ModuleLoader__.load({
       "settings.morningTitle": "Morning readout",
       "settings.morningLunch": "Show lunch countdown in the morning",
       "settings.morningLunchDesc": "On: the morning shows the time until lunch. Off: it always shows the time until off work.",
+      "settings.tailSeconds": "Seconds at the end",
+      "settings.tailSecondsDesc": "For surfaces with seconds off, keep ticking per second during the last N minutes; 0 turns it off.",
       "settings.dock": "Dock line",
       "settings.dockDesc": "Show the countdown line in the composer dock below the input.",
       "settings.seconds": "Show seconds",
@@ -273,6 +278,9 @@ window.__ModuleLoader__.load({
         lunchStart: clock(source.lunchStart, DEFAULTS.lunchStart),
         lunchEnd: clock(source.lunchEnd, DEFAULTS.lunchEnd),
         morningLunch: source.morningLunch === true,
+        tailSecondsMinutes: Number.isFinite(source.tailSecondsMinutes)
+          ? Math.min(Math.max(0, Math.round(source.tailSecondsMinutes)), 120)
+          : DEFAULTS.tailSecondsMinutes,
         // v1/v2 里这个开关叫 water，老数据要继续有效。
         timer: source.timer !== false && source.water !== false,
         // 旧版把整句（「距上次喝水」）存进 timerLabel，现在只存尾巴那个词。
@@ -479,9 +487,20 @@ window.__ModuleLoader__.load({
       };
     }
 
-    /** 毫秒 → HH:MM:SS；`withSeconds` 为 false 时只到 HH:MM（小时不封顶，负数按 0）。 */
-    function formatDuration(ms, withSeconds) {
-      const total = Math.max(0, Math.floor(ms / 1000));
+    /**
+     * 毫秒 → `HH:MM(:SS)`。
+     *
+     * `roundUp` 是给倒计时用的：还剩 7 秒时按分钟向下取整会显示 `00:00`，看起来像已经到点，
+     * 所以倒计时一律向上取整到「当前显示的精度」（有秒进位到秒，没秒进位到分钟）。
+     * 计时器（已过时长）用默认的向下取整。
+     */
+    function formatDuration(ms, withSeconds, roundUp) {
+      const step = withSeconds === false ? MINUTE : 1000;
+      const clamped = Math.max(0, ms);
+      const total =
+        roundUp === true
+          ? Math.ceil(clamped / step) * (step / 1000)
+          : Math.floor(clamped / 1000);
       const hours = Math.floor(total / 3600);
       const minutes = Math.floor((total % 3600) / 60);
       const seconds = total % 60;
@@ -489,6 +508,18 @@ window.__ModuleLoader__.load({
       return withSeconds === false
         ? `${pad(hours)}:${pad(minutes)}`
         : `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
+    }
+
+    /**
+     * 这个位置此刻要不要显示秒：用户开着就显示；关掉的话，只在「最后 N 分钟」里显示
+     * （`tailSecondsMinutes`，0 = 不启用）。已经下班后的正计时不参与这条规则。
+     */
+    function showsSeconds(configured, view, settings) {
+      if (configured !== false) return true;
+      if (view.kind === "after") return false;
+      const tail = settings.tailSecondsMinutes;
+      if (!Number.isFinite(tail) || tail <= 0) return false;
+      return view.msLeft <= tail * MINUTE;
     }
 
     function percentOf(view) {
@@ -562,8 +593,9 @@ window.__ModuleLoader__.load({
      * 画在哪由窗口尺寸现算：右锚就一直贴着右边，左锚就一直贴着左边。
      * ------------------------------------------------------------------ */
     /** 关掉秒之后数字短一大截，卡片跟着收窄，不然右边会空一块。 */
-    function floatWidth(settings) {
-      return settings.floatSeconds === false ? CARD_WIDTH_COMPACT : CARD_WIDTH;
+    /** 参数是「这一刻实际显不显示秒」，不是设置里的开关（最后 N 分钟会临时开秒）。 */
+    function floatWidth(withSeconds) {
+      return withSeconds === false ? CARD_WIDTH_COMPACT : CARD_WIDTH;
     }
 
     /** 把点夹进可视区（顶部让开窗口按钮那一栏，底部留一条）。 */
@@ -866,7 +898,11 @@ window.__ModuleLoader__.load({
         h(
           "span",
           { className: "dsh-offwork-dock-value", key: "value" },
-          formatDuration(view.msLeft, settings.dockSeconds)
+          formatDuration(
+            view.msLeft,
+            showsSeconds(settings.dockSeconds, view, settings),
+            true
+          )
         )
       );
     }
@@ -919,7 +955,10 @@ window.__ModuleLoader__.load({
       const settings = useSettings();
       const visible = settings.float === true;
       const now = useSecondTick(visible);
-      const width = floatWidth(settings);
+      // 先算出「此刻显不显示秒」：宽度要跟着它走（进了最后 N 分钟会重新逐秒跳，卡片得跟着变宽）。
+      const view = viewAt(new Date(now), settings);
+      const showSeconds = showsSeconds(settings.floatSeconds, view, settings);
+      const width = floatWidth(showSeconds);
       const cardRef = React.useRef(null);
       const drag = React.useRef(null);
       /** 最近一次拖动的结束时刻：拖来拖去时浏览器也会给两次 click，别让「双击关闭」误伤。 */
@@ -1001,7 +1040,6 @@ window.__ModuleLoader__.load({
 
       if (!visible) return null;
 
-      const view = viewAt(new Date(now), settings);
       const percent = percentOf(view);
       const label = labelOf(view, "float");
       const footer = footerOf(view, settings);
@@ -1012,7 +1050,7 @@ window.__ModuleLoader__.load({
           ref: cardRef,
           className: "dsh-offwork-float",
           role: "group",
-          "data-compact": settings.floatSeconds === false ? "true" : "false",
+          "data-compact": showSeconds === false ? "true" : "false",
           "aria-label": `${label} — ${footer}`,
           style: { left: `${pos.x}px`, top: `${pos.y}px`, width: `${width}px` },
           title: translate("float.tip"),
@@ -1037,7 +1075,7 @@ window.__ModuleLoader__.load({
         h(
           "div",
           { className: "dsh-offwork-float-time", key: "time" },
-          formatDuration(view.msLeft, settings.floatSeconds)
+          formatDuration(view.msLeft, showSeconds, true)
         ),
         h(
           "div",
@@ -1182,6 +1220,30 @@ window.__ModuleLoader__.load({
               "div",
               { className: "dsh-offwork-row-controls" },
               toggle("morningLunch", "settings.morningLunch", "settings.morningLunchDesc")
+            )
+          ),
+          row(
+            "tail-seconds",
+            "settings.tailSeconds",
+            "settings.tailSecondsDesc",
+            h(
+              "div",
+              { className: "dsh-offwork-row-controls" },
+              h("input", {
+                className: "dsh-offwork-input dsh-offwork-input-number",
+                type: "number",
+                min: 0,
+                max: 120,
+                step: 1,
+                value: settings.tailSecondsMinutes === 0 ? "" : String(settings.tailSecondsMinutes),
+                placeholder: "0",
+                "aria-label": translate("settings.tailSeconds"),
+                onChange: (event) => {
+                  const parsed = Number.parseInt(event.target.value, 10);
+                  writeSettings({ tailSecondsMinutes: Number.isFinite(parsed) ? parsed : 0 });
+                }
+              }),
+              h("span", { className: "dsh-offwork-field-prefix" }, translate("settings.minutesUnit"))
             )
           )
         ]),
@@ -1508,6 +1570,7 @@ window.__ModuleLoader__.load({
         workProgress,
         timerElapsed,
         timerWarned,
+        showsSeconds,
         timerLabelOf,
         floatWidth,
         resolveAnchor,

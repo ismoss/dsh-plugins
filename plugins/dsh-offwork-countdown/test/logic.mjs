@@ -54,7 +54,7 @@ const near = (label, actual, expected, tolerance = 1000) => {
   console.log(`${ok ? "PASS" : "FAIL"}  ${label}${ok ? "" : `  (got ${actual}, want ~${expected})`}`);
 };
 
-const { parseClock, viewAt, formatDuration, normalize, percentOf, scheduleOf, timerElapsed, timerWarned, timerLabelOf, floatWidth, resolveAnchor, anchorFromPoint } =
+const { parseClock, viewAt, formatDuration, normalize, percentOf, scheduleOf, timerElapsed, timerWarned, showsSeconds, timerLabelOf, floatWidth, resolveAnchor, anchorFromPoint } =
   module.__internals;
 const MIN = 60000;
 const settings = { start: "09:00", end: "18:00" };
@@ -70,8 +70,26 @@ check("formatDuration 负数按 0", formatDuration(-5000), "00:00:00");
 check("formatDuration 跨 100 小时", formatDuration(100 * 3600 * 1000), "100:00:00");
 check("formatDuration 关掉秒", formatDuration(27 * MIN + 7000, false), "00:27");
 check("formatDuration 关掉秒仍不丢小时", formatDuration(5 * 3600 * 1000 + 59 * MIN, false), "05:59");
-check("有秒时悬浮窗宽 268", floatWidth({}), 268);
-check("关秒后悬浮窗收窄到 190", floatWidth({ floatSeconds: false }), 190);
+check("有秒时悬浮窗宽 268", floatWidth(true), 268);
+check("关秒后悬浮窗收窄到 190", floatWidth(false), 190);
+
+// ── 倒计时取整：还剩 7 秒不能显示成 00:00 ──────────────────────────────
+check("剩 7 秒、关秒 → 至少 00:01", formatDuration(7000, false, true), "00:01");
+check("剩 7 秒、向下取整 → 00:00（计时器语义）", formatDuration(7000, false, false), "00:00");
+check("刚好 0 秒仍是 00:00", formatDuration(0, false, true), "00:00");
+check("剩 61 秒、关秒 → 00:02", formatDuration(61000, false, true), "00:02");
+check("剩 90 秒、开秒 → 00:01:30", formatDuration(90000, true, true), "00:01:30");
+check("1 小时零 0.5 秒、关秒 → 01:01", formatDuration(3600500, false, true), "01:01");
+
+// ── 最后 N 分钟临时显示秒 ────────────────────────────────────────────
+const nearTail = { kind: "working", target: "end", msLeft: 4 * MIN, progress: 0.5 };
+const farTail = { kind: "working", target: "end", msLeft: 6 * MIN, progress: 0.5 };
+const afterTail = { kind: "after", target: "end", msLeft: MIN, progress: 1 };
+check("开着秒就一直显示", showsSeconds(true, farTail, { tailSecondsMinutes: 5 }), true);
+check("关秒且还有 6 分钟 → 不显示秒", showsSeconds(false, farTail, { tailSecondsMinutes: 5 }), false);
+check("关秒但只剩 4 分钟 → 显示秒", showsSeconds(false, nearTail, { tailSecondsMinutes: 5 }), true);
+check("关秒、尾部设 0 → 一直不显示", showsSeconds(false, nearTail, { tailSecondsMinutes: 0 }), false);
+check("下班后的正计时不套用尾部规则", showsSeconds(false, afterTail, { tailSecondsMinutes: 5 }), false);
 
 // ── 工作日各时段 ──────────────────────────────────────────────────────
 const workday = (h, m, s = 0) => new Date(2026, 10, 5, h, m, s); // 2026-11-05 周四
