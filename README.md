@@ -6,7 +6,7 @@
 | 插件 | 一句话 | 目录 |
 |---|---|---|
 | **下班倒计时** `dsh-offwork-countdown` | 输入框下方的下班倒计时 + 点一下归零的计时器 + 可拖动的悬浮卡片 | [plugins/dsh-offwork-countdown](./plugins/dsh-offwork-countdown) |
-| **便签** `dsh-sticky-notes` | 一个工作区一份 Markdown 的编号便签：用量栏点一下直接写，侧栏「自动化任务」下面有独立便签页；AI 用 `sticky_notes` 工具按编号读写，可边执行边把结果追回同一张 | [plugins/dsh-sticky-notes](./plugins/dsh-sticky-notes) |
+| **便签** `dsh-sticky-notes` | 一个工作区一份 Markdown 的编号便签：用量栏点一下直接写，侧栏「自动化任务」下面有独立便签页；AI 用 `sticky_notes` 按编号读写，带状态/接手人交接和每个工作区一块公告栏 | [plugins/dsh-sticky-notes](./plugins/dsh-sticky-notes) |
 
 ## 怎么装
 

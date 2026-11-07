@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Sticky notes",
-    "description": "Numbered notes grouped by DSH workspace: click Sticky notes in the composer dock to write into the current workspace, or open the notes panel under Automation tasks in the sidebar. Bodies are plain Markdown under ~/.dsh/sticky-notes/ (override with DSH_STICKY_NOTES_DIR); the agent reads and writes them by number through the sticky_notes tool."
+    "description": "Numbered notes grouped by DSH workspace: click Sticky notes in the composer dock to write into the current workspace, or open the notes panel under Automation tasks in the sidebar. Bodies are plain Markdown under ~/.dsh/sticky-notes/ (override with DSH_STICKY_NOTES_DIR); the agent reads and writes them by number, hands a note over with status/owner, and posts to the workspace's shared board."
   }
 }
