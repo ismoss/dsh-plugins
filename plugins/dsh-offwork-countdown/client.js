@@ -41,6 +41,8 @@ window.__ModuleLoader__.load({
       morningLunch: false,
       timer: true,
       timerLabel: "",
+      timerWarnMinutes: 0,
+      timerWarnColor: "#d97706",
       dock: true,
       dockSeconds: true,
       timerSeconds: true,
@@ -120,6 +122,11 @@ window.__ModuleLoader__.load({
       "settings.timerLabelDesc": "用量栏里显示成「距上次」加上这里填的词；留空就是「喝水」。",
       "settings.timerPresets": "常用",
       "settings.timerPresetsDesc": "点一下直接填进上面的文案。",
+      "settings.timerWarn": "超时提醒",
+      "settings.timerWarnDesc": "计到多少分钟就变色；填 0 表示不提醒。",
+      "settings.timerWarnColor": "提醒颜色",
+      "settings.timerWarnColorDesc": "超过上面那个数之后，这一行文字换成这个颜色。",
+      "settings.minutesUnit": "分钟",
       "settings.float": "悬浮窗",
       "settings.floatDesc": "在页面上显示大号倒计时卡片，可以拖到任意位置。",
       "settings.floatSide": "悬浮窗位置",
@@ -186,6 +193,11 @@ window.__ModuleLoader__.load({
       "settings.timerLabelDesc": "Shown after the fixed prefix in the dock; leave it empty for “drink”.",
       "settings.timerPresets": "Presets",
       "settings.timerPresetsDesc": "Click one to fill the label above.",
+      "settings.timerWarn": "Reminder",
+      "settings.timerWarnDesc": "Turn the line into this colour after N minutes; 0 turns it off.",
+      "settings.timerWarnColor": "Reminder colour",
+      "settings.timerWarnColorDesc": "Used for the line once it passes the threshold.",
+      "settings.minutesUnit": "min",
       "settings.float": "Floating card",
       "settings.floatDesc": "Show the large countdown card, draggable anywhere on the page.",
       "settings.floatSide": "Card position",
@@ -274,6 +286,12 @@ window.__ModuleLoader__.load({
         dock: source.dock !== false,
         dockSeconds: source.dockSeconds !== false,
         timerSeconds: source.timerSeconds !== false,
+        timerWarnMinutes: Number.isFinite(source.timerWarnMinutes)
+          ? Math.min(Math.max(0, Math.round(source.timerWarnMinutes)), 1440)
+          : 0,
+        timerWarnColor: /^#[0-9a-fA-F]{6}$/.test(source.timerWarnColor)
+          ? source.timerWarnColor.toLowerCase()
+          : DEFAULTS.timerWarnColor,
         floatSeconds: source.floatSeconds !== false,
         float: source.float !== false,
         dblclick: source.dblclick !== false,
@@ -530,6 +548,13 @@ window.__ModuleLoader__.load({
       return nowMs - Math.min(Math.max(workStart, last), nowMs);
     }
 
+    /** 计时器是否已超过提醒阈值（分钟；0 表示不提醒）。 */
+    function timerWarned(elapsedMs, settings) {
+      const minutes = settings.timerWarnMinutes;
+      if (!Number.isFinite(minutes) || minutes <= 0) return false;
+      return elapsedMs >= minutes * MINUTE;
+    }
+
     /* ------------------------------------------------------------------ *
      * 悬浮窗的位置：按「贴哪个边 + 离边多远」存，不存像素坐标
      *
@@ -617,6 +642,8 @@ window.__ModuleLoader__.load({
 .dsh-offwork-timer:active{opacity:.7}
 .dsh-offwork-timer:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:1px}
 .dsh-offwork-timer-value{font-variant-numeric:tabular-nums;letter-spacing:.02em}
+/* 超过提醒阈值：颜色由内联样式给（用户自定义），这里只加一点重量让它跳出来。 */
+.dsh-offwork-timer[data-warn="true"]{font-weight:600}
 
 /* ── 悬浮窗（对齐官方宣传图的卡片）──────────────────────────── */
 .dsh-offwork-icon{flex:none;display:block;opacity:.9}
@@ -759,6 +786,14 @@ window.__ModuleLoader__.load({
 
 /* ── 文案输入与常用写法 ─────────────────────────────────────── */
 .dsh-offwork-input-text{width:120px}
+.dsh-offwork-input-number{width:64px;text-align:right}
+.dsh-offwork-color{
+  appearance:none;flex:none;width:26px;height:22px;padding:0;cursor:pointer;
+  border:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.28));
+  border-radius:6px;background:transparent;color-scheme:inherit;
+}
+.dsh-offwork-color::-webkit-color-swatch-wrapper{padding:2px}
+.dsh-offwork-color::-webkit-color-swatch{border:none;border-radius:4px}
 .dsh-offwork-field-prefix{
   font-size:12px;line-height:18px;white-space:nowrap;
   color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.9));
@@ -849,6 +884,9 @@ window.__ModuleLoader__.load({
       const elapsed = timerElapsed(new Date(now), settings);
       if (elapsed === null) return null;
 
+      // 超过阈值就整颗换成用户挑的颜色；关掉阈值（0）时永远是中性灰。
+      const warned = timerWarned(elapsed, settings);
+
       return h(
         "span",
         { className: "dsh-offwork-timer-wrap" },
@@ -858,6 +896,8 @@ window.__ModuleLoader__.load({
           {
             type: "button",
             className: "dsh-offwork-timer",
+            "data-warn": warned ? "true" : "false",
+            style: warned ? { color: settings.timerWarnColor } : undefined,
             title: translate("timer.tip"),
             onClick: () => writeSettings({ lastDrink: Date.now() })
           },
@@ -1223,6 +1263,47 @@ window.__ModuleLoader__.load({
                   )
               )
             )
+          ),
+          row(
+            "timer-warn",
+            "settings.timerWarn",
+            "settings.timerWarnDesc",
+            h(
+              "div",
+              { className: "dsh-offwork-row-controls" },
+              h("input", {
+                className: "dsh-offwork-input dsh-offwork-input-number",
+                type: "number",
+                min: 0,
+                max: 1440,
+                step: 5,
+                value: settings.timerWarnMinutes === 0 ? "" : String(settings.timerWarnMinutes),
+                placeholder: "0",
+                "aria-label": translate("settings.timerWarn"),
+                onChange: (event) => {
+                  const parsed = Number.parseInt(event.target.value, 10);
+                  writeSettings({ timerWarnMinutes: Number.isFinite(parsed) ? parsed : 0 });
+                }
+              }),
+              h("span", { className: "dsh-offwork-field-prefix" }, translate("settings.minutesUnit"))
+            )
+          ),
+          row(
+            "timer-warn-color",
+            "settings.timerWarnColor",
+            "settings.timerWarnColorDesc",
+            h(
+              "div",
+              { className: "dsh-offwork-row-controls" },
+              h("input", {
+                className: "dsh-offwork-color",
+                type: "color",
+                value: settings.timerWarnColor,
+                "aria-label": translate("settings.timerWarnColor"),
+                onChange: (event) => writeSettings({ timerWarnColor: event.target.value })
+              }),
+              h("span", { className: "dsh-offwork-field-prefix" }, settings.timerWarnColor)
+            )
           )
         ]),
 
@@ -1426,6 +1507,7 @@ window.__ModuleLoader__.load({
         scheduleOf,
         workProgress,
         timerElapsed,
+        timerWarned,
         timerLabelOf,
         floatWidth,
         resolveAnchor,

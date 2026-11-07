@@ -22,7 +22,7 @@ keyed 座位用 `key` 而不是 `id`；`include:` 前缀两种写法都挂，防
 
 ```js
 { start, end, lunch, lunchStart, lunchEnd, morningLunch,
-  timer, timerLabel,
+  timer, timerLabel, timerWarnMinutes, timerWarnColor,
   dock, dockSeconds, timerSeconds, floatSeconds,
   float, floatSide, dblclick, lastDrink, pos }
 ```
@@ -41,6 +41,8 @@ v3（计时文案存整句）的数据都能直接升级。
 - 进度条跟着 `target` 走：数下班 = 已干活比例（午休剔除）；数午饭 = 上午时段比例；
   午休 = 午休比例。
 - `timerElapsed()` 的基准是 `max(当天上班, 上次点击)`，上班前返回 `null`（不显示）。
+- `timerWarned(elapsed, settings)`：`timerWarnMinutes`（0 = 不提醒，上限 1440）乘以分钟数后与
+  已过时长比较；到了就把胶囊的文字颜色换成 `timerWarnColor`（内联样式，默认 `#d97706`）。
 - 关秒只影响 `formatDuration(ms, false)` 的输出（`HH:MM`）；悬浮卡片同时收窄
   （`floatWidth` → 190px）并把字号提到 46px，否则右边会空一块。
 

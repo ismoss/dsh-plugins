@@ -54,7 +54,7 @@ const near = (label, actual, expected, tolerance = 1000) => {
   console.log(`${ok ? "PASS" : "FAIL"}  ${label}${ok ? "" : `  (got ${actual}, want ~${expected})`}`);
 };
 
-const { parseClock, viewAt, formatDuration, normalize, percentOf, scheduleOf, timerElapsed, timerLabelOf, floatWidth, resolveAnchor, anchorFromPoint } =
+const { parseClock, viewAt, formatDuration, normalize, percentOf, scheduleOf, timerElapsed, timerWarned, timerLabelOf, floatWidth, resolveAnchor, anchorFromPoint } =
   module.__internals;
 const MIN = 60000;
 const settings = { start: "09:00", end: "18:00" };
@@ -214,6 +214,18 @@ check(
 check("pos 缺 dx 则丢弃", normalize({ pos: { ax: "right" } }).pos, null);
 check("pos 旧格式（像素）按当前窗口换算", JSON.stringify(normalize({ pos: { x: 1200, y: 200 } }).pos), '{"ax":"right","dx":132,"ay":"top","dy":200}');
 check("pos 完全非法则丢弃", normalize({ pos: { x: "a", y: 1 } }).pos, null);
+
+// ── 计时器超时提醒 ──────────────────────────────────────────────────
+const warnSettings = { timerWarnMinutes: 90, timerWarnColor: "#d97706" };
+check("阈值 0 = 不提醒", timerWarned(10 * 3600 * 1000, { timerWarnMinutes: 0 }), false);
+check("没到阈值不变色", timerWarned(89 * MIN, warnSettings), false);
+check("刚好到阈值就变色", timerWarned(90 * MIN, warnSettings), true);
+check("超过阈值保持变色", timerWarned(91 * MIN, warnSettings), true);
+check("阈值非法当不提醒", timerWarned(10 * MIN, { timerWarnMinutes: "x" }), false);
+check("阈值超上限被夹到 1440", normalize({ timerWarnMinutes: 5000 }).timerWarnMinutes, 1440);
+check("阈值负数归零", normalize({ timerWarnMinutes: -5 }).timerWarnMinutes, 0);
+check("颜色非法退回默认", normalize({ timerWarnColor: "red" }).timerWarnColor, "#d97706");
+check("颜色统一小写", normalize({ timerWarnColor: "#FF0000" }).timerWarnColor, "#ff0000");
 
 // ── 悬浮窗位置：窗口缩放时应当贴边跟随，而不是被夹在中间 ──────────────
 const rightAnchor = { ax: "right", dx: 24, ay: "top", dy: 120 };
