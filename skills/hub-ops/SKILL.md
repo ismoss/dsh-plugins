@@ -185,6 +185,18 @@ decide({
 
 **一句话**：会话是一次性的，记忆放在仓库/便签/账本里。
 
-## 十二、参考
+## 十二、防回归（"本来对的别改坏"）
+
+多会话/多轮最容易踩的坑：**改一个点，把旁边的正确项顺手改回错**。四条防线：
+
+1. **派活写"不变量"**：除 `this_round`（要改什么），再写 **"保持不动：…"**——列出本轮绝不能被改变的既有正确项（行为/数值/已修 bug）。worker 范围外一律不碰，有疑问写进结论。
+2. **同一资源单写者**：同一个工作副本 / 同一组共享文件（共用脚本、配置、共用预制体/组件）同一时间只允许一个任务改；并行就独立 checkout / worktree，别在共享树上硬并行。
+3. **读-改-验三步**：动手前读权威现状（`memory/STATUS.md` 唯一事实源 + `git status`/`svn status`）；只改目标；改后**跑回归**（编译/测试 + 逐项复验"不变量" + 确认只剩预期改动）。
+4. **回执带回归确认**：`status:done` 回报里除了"做了什么"，还要写 **"未动的既有正确项 + 怎么验的"**；中枢验收对照不变量，变了就打回。
+
+配套见 [references/anti-regression.md](references/anti-regression.md)：不变量清单模板 + 自检口径（改完 `git status`/`svn status` 对照白名单，出现非预期改动=回归）。
+
+## 十三、参考
 
 - [references/playbook.md](references/playbook.md)：一次完整派活的真实调用记录与产物形状。
+- [references/anti-regression.md](references/anti-regression.md)：防回归不变量清单模板与自检口径。
