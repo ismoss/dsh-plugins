@@ -107,6 +107,43 @@ session_create({
 | `session_archive` 报「cannot be retired yet」 | 还持有 doing/blocked 任务，或在跑 | 先收尾，别绕 |
 | 自己的上下文越来越长 | 你把子会话的输出来回搬运了 | 只留结论，细节让对方留在自己会话里 |
 
-## 九、参考
+## 九、Drex 决策闸门（可选增强）
+
+> 前提：本机接入了 drex MCP，工具里能看到 `decide` 才用；看不到就是没加载，别假装有（接入方式见维护仓 MAINTAIN）。
+> Drex 是**决策模型**，不是执行器：喂一段 state + 若干 typed questions，回**校准概率 / 标签 / 档位**。它只帮你在关键节点分诊；活仍由子会话干，成品验收仍归人。
+
+**四个时刻（按收益从高到低，能问才问）**
+
+| 时刻 | 触发点 | state 喂什么 | 问哪几个 typed 问题 | 怎么用结果 |
+|---|---|---|---|---|
+| ② 回执分诊 | 收到 `status:"done"`、收尾前 | `this_round` + `done[]` 结论 + 验收标准（只发摘要） | `round_ok`(noul) 是否达成本轮；`action`(choice) accept/send_back/ask_human | `round_ok` 低或 `action=send_back` → 打回；仅内部任务且明显完成才自收；**对人有交付物的，仍走 §四 请人验收** |
+| ④ 开口过滤 | 打算开口前 | 结论摘要 + 是否不可逆 | `needs_human`(noul) 是否必须人拍板/验收 | 低 → 不开口，写 board/便签；高 → 开口。失联照 §五，不问 Drex |
+| ① 拆活路由 | 需求还没定 task_id | 需求原文 + 现有 task_id/便签 | `project`(choice) 归哪个项目；`split`(noul) 是否拆多个 | 仅作建议，task_id 与拆法仍由你定 |
+| ③ 失联参考 | 看门狗「停手等你决定」 | 任务年龄、会话状态、已重派次数 | `next`(choice) 重派/换会话/放弃/问人 | 仅参考；**「running 不重派」压过它** |
+
+一次调用尽量把问题批量问完（省额度）：
+
+```text
+decide({
+  state: "task_id=… 第N轮\n本次只做：…\n回执 done：…\n验收标准：…",
+  questions: {
+    round_ok: { type: "noul", instructions: "这轮是否达标、可收尾？" },
+    action:   { type: "choice", instructions: "下一步？",
+                criteria: { accept: "收尾", send_back: "打回", ask_human: "请人拍板" } }
+  }
+})
+```
+
+**硬边界**
+
+- **失败即回退**：`decide` 报错/超时/没额度 → 回到原判断（拿不准就按 §四 开口），绝不让流程卡住，绝不因一个概率就自动归档/删除/提交。
+- **概率不是真理**：只做门槛、排序、分诊；不可逆动作仍由人点或按既有铁律。
+- **数据边界**：state 会发到第三方云端，只发粗粒度摘要，**不塞源码、密钥、客户隐私、本机路径**。
+- **额度**：免费额度很紧（约 10 次/分、100 次/天/网络）；只在上面四刻问，别每轮都问。
+- **可见性**：子会话看不到 `decide` 就只在中枢用；不要在派活说明里要求子会话自己调 drex。
+
+没有 drex：以上整节跳过，按 §三/四/五 原逻辑走。
+
+## 十、参考
 
 - [references/playbook.md](references/playbook.md)：一次完整派活的真实调用记录与产物形状。
