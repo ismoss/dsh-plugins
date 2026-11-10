@@ -15,7 +15,7 @@
 
 | skill | 一句话 | 目录 |
 |---|---|---|
-| **中枢** `hub-ops` | 让一个会话当调度：把活拆成任务派给子会话（`task_id` + `this_round`）、收结构化回执、只在要你验收或拍板时开口、收尾先检查再归档 | [skills/hub-ops](./skills/hub-ops) |
+| **中枢** `hub-ops` | 让一个会话当调度：把活拆成任务派给子会话（`task_id` + `this_round`）、收结构化回执、只在要你验收或拍板时开口、收尾先检查再归档；可选接 Drex 决策模型（`decide`）在分诊/验收/开口判断上做闸门 | [skills/hub-ops](./skills/hub-ops) |
 
 ## 怎么装
 
