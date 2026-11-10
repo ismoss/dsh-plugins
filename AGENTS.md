@@ -23,6 +23,17 @@
 3. 根 `README.md` 的插件表加一行。
 4. 有可测的纯函数就写 `test/logic.mjs`（不引测试框架，直接断言 + 退出码），`npm test` 要能跑。
 
+## 加一个 skill
+
+skill 不是插件：没有 `package.json`、不装进 profile、没有 UI，DSH 通过 `~/.dsh/skills` 的软链直接读。
+
+1. 新建 `skills/<名字>/SKILL.md`，frontmatter 写 `name` 和 `description`——**description 决定它什么时候被加载**，把触发词、适用场景、不适用场景都写进去。
+2. 长内容放 `references/*.md`，`SKILL.md` 里只留指针和硬规则，控制在 150 行内。
+3. 在 magpie 的 `library.json` 里登记 `{ "name": "<名字>", "agents": ["dsh"] }`，并让 `~/.dsh/skills/<名字>` 指到本仓这个目录。
+4. 根 `README.md` 的 skill 表加一行。
+
+skill 改完不用重启、不用重装，下一个回合就生效（`SKILL.md` 的 description 变了，列表下一轮刷新）。
+
 ## 硬约定
 
 - **没有构建步骤**：`client.js` 就是浏览器能直接执行的自执行文件，不引入打包器、JSX、TypeScript。

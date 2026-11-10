@@ -8,6 +8,14 @@
 | **下班倒计时** `dsh-offwork-countdown` | 输入框下方的下班倒计时 + 点一下归零的计时器 + 可拖动的悬浮卡片 | [plugins/dsh-offwork-countdown](./plugins/dsh-offwork-countdown) |
 | **便签** `dsh-sticky-notes` | 一个工作区一份 Markdown 的编号便签：用量栏点一下直接写，侧栏「自动化任务」下面有独立便签页；AI 用 `sticky_notes` 按编号读写，带状态/接手人交接和每个工作区一块公告栏 | [plugins/dsh-sticky-notes](./plugins/dsh-sticky-notes) |
 
+## 中枢 skill
+
+插件之外，这里还放了一份**会话调度**用的 skill。它不是插件——没有 `package.json`、不用装进 profile，DSH 通过 `~/.dsh/skills` 的软链直接读。
+
+| skill | 一句话 | 目录 |
+|---|---|---|
+| **中枢** `hub-ops` | 让一个会话当调度：把活拆成任务派给子会话（`task_id` + `this_round`）、收结构化回执、只在要你验收或拍板时开口、收尾先检查再归档 | [skills/hub-ops](./skills/hub-ops) |
+
 ## 怎么装
 
 每个子目录本身就是一个 dsh bundle（`package.json` 里有 `dsh.bundle.patch`）。clone 本仓后，
@@ -31,6 +39,10 @@ plugins/
     icon.svg               # 插件页图标（≤256KiB，留在包内）
     DEVELOPING.md          # 开发视角：注册表、数据字段、边界规则、已知坑、校验
     test/logic.mjs         # 纯函数单测，node test/logic.mjs
+skills/
+  <名字>/                  # 一个目录 = 一个 dsh skill，不是插件
+    SKILL.md               # frontmatter 的 name / description 决定它何时被加载
+    references/*.md        # 长内容拆这里，SKILL.md 只留指针
 ```
 
 **不要给插件放 `README.md`**：宿主会把包的 README 整篇渲染到插件页，标题、表格、已知坑
