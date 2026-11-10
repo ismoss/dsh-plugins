@@ -50,7 +50,7 @@ Task "login-refactor" round 3 is now held by that session.
 
 回执契约（这一轮收尾时必须照做）：
 1. 结论写在最后一条回复里，不要只说「收到」。
-2. 同时调用 session_send_message：session_id="session-a1", task_id="login-refactor", status="done", done=[…]。
+2. 同时调用 session_send_message：session_id="session-a1", task_id="login-refactor", round=3, status="done", done=[…]。
 3. 需要我拍板时 status="blocked"…
 ```
 
@@ -65,6 +65,7 @@ session_send_message({
   session_id: "session-a1",
   task_id: "login-refactor",
   status: "done",
+  round: 3,
   done: ["登录页已接上", "补了 3 条单测"],
   message: "接好了，12 条全过。"
 })
@@ -106,7 +107,7 @@ sticky_notes({ action: "status", no: 3, status: "done" })
 登录页接完了，12 条测试全过。
 
 要你验一下：打开 /login，用错误密码连试三次，看是否停在原地不跳转。
-不对的话告诉我，我把第 4 轮派给同一个会话（它会带着这一轮的结论继续）。
+不对的话告诉我，我先恢复该会话，再把第 4 轮派给它（新一轮会带上已有结论）。
 ```
 
 一句话验收、一句话退路。不要贴 diff、不要贴子会话原文。

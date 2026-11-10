@@ -20,7 +20,7 @@ description: >-
 | 工具 | 参数 | 什么时候用 |
 |---|---|---|
 | `session_create` | `title` `message` `task_id` `this_round[]` `already_done[]` `note` `force` `workspace?` | 这个任务还没有会话 → 新开一个，新会话直接成为该任务的写者 |
-| `session_send_message` | `session_id` `message` `task_id` `this_round[]` `already_done[]` `note` `task_title` `status` `done[]` `force` `delivery?` | 已有会话 → 派下一轮；**带 `status` 就是回执，不是派活** |
+| `session_send_message` | `session_id` `message` `task_id` `this_round[]` `already_done[]` `note` `task_title` `status` `round?` `done[]` `force` `delivery?` | 已有会话 → 派下一轮；**带 `status` 就是回执，不是派活**（回执带 `round` 更稳） |
 | `session_list` | `query?` `all_workspaces?` `limit?` | 找会话；持有任务的会话会多一列 `task` |
 | `session_tasks` | `task_id?` `limit?` | 查账本：谁在干、第几轮、已完成、有没有回执 |
 | `session_archive` | `session_id` `unarchive?` `confirm?` | 退役：不带 `confirm` 只做检查，干净了才 `confirm: true` |
@@ -73,7 +73,7 @@ session_create({
 
 ## 五、失联
 
-看门狗会自己处理：一轮超过 25 分钟没有回执、且会话不在 running，会自动重派一次，并给你发一条「【看门狗】」。累计重派 2 次不回来，它会停下来等你决定。
+看门狗会自己处理：一轮超过 25 分钟没有回执、且会话不在 running，新账本保留了原始消息时会自动重派并给你发一条「【看门狗】」；累计重派 2 次后停手。旧账本没有原始消息时**直接停手通知**，必须先核对原派活消息中的不变量，再决定是否重派。
 
 你收到看门狗通知时：
 
@@ -84,7 +84,7 @@ session_create({
 
 1. **让它回执**：没有 `status: "done"` 的任务不收尾；卡住的就先问人。
 2. **退役检查**：`session_archive({ session_id })` 不带 `confirm` —— 它会告诉你这个会话还持有什么。
-   - 干净 → `confirm: true` 归档，行和绿点一起消失；
+   - 干净 → `confirm: true` 归档，侧栏行消失；未读绿点是客户端状态，插件不能承诺清除；
    - 不干净 → 先解决，别硬来（它会直接报错）。
 3. **便签落地**：`sticky_notes` 把结论追加回对应编号，状态推成 done。便签是给人看的，别写过程。
 
@@ -92,7 +92,8 @@ session_create({
 
 ## 七、硬边界
 
-- **一个 `task_id` 同时只有一个会话在干。** 被拒绝是正常工作，不是故障；要换人必须 `force: true` 并说明为什么。
+- **一个 `task_id` 同时只有一个会话在干（仅同一 Host 进程内保证顺序派活）。** 被拒绝是正常工作；`doing` 中换人用 `force: true` 并说明原因。`blocked` 的转派目前可不带 force，先核对持有者并避免旧会话继续写；不同 Host 进程不能共享账本写入。
+- **回执带当前 `round`。** 只有当前持有者的 `doing` 轮次可回执；不带 round 的旧调用兼容，但不能防同一持有者的迟到回执。
 - **不重派正在跑的会话。** 看门狗都不做，你更不该做。
 - **不直接改子会话工作目录里的文件。** 要改就派给它，或明确告诉人。
 - **不一次派两件事给同一个 `task_id`。** 拆成两个 id。
