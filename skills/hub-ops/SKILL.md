@@ -162,7 +162,7 @@ decide({
 - `svn commit` 直接进中心库、无暂存区/本地分支、基本不可回退；由**提交/集成会话（AI）**执行，不是人。
 - **同一 SVN 工作副本同一时间只允许一个写者/一个任务**；要并行就各任务**独立 checkout 副本**。
 - 提交前先 `svn update`；**只 `svn commit <具体目标路径>`，绝不整工作副本**；AI 产物（AGENTS.md / memory / .vscode / packages 插件）**禁止 `svn add`**。
-- **遵循该库自己的 SVN 约定**（例 IPTV：中文 log 必须 `svn commit -F <UTF-8 无 BOM 文件> --encoding UTF-8`、严禁 `-m "中文"`；提交后跑 `工具/svn_log_check.py`；含中文路径用 GBK .bat 经 `cmd /c`）。项目若要求"先列影响清单/确认"，就先列再做。
+- **遵循该库自己的 SVN 约定**（例 IPTV：中文 log 必须 `svn commit -F <UTF-8 无 BOM 文件> --encoding UTF-8`、严禁 `-m "中文"`；提交后跑 `工具/svn_log_check.py`；含中文路径用 GBK .bat 经 `cmd /c`）。项目若要求"先列影响清单/确认"，就先列再做——**"先确认"只是提交前的闸门，确认之后仍由 AI 执行提交，不是把提交转给人**。
 
 **同项目同时有 SVN 主库 + `program/.git` 辅助**：**先 SVN 目标路径提交、再 git 辅助提交**；两边都只含本次目标文件。
 
