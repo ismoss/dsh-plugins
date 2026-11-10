@@ -2,6 +2,7 @@
 
 自己搓的 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（下称 dsh）Web UI 小插件集合。
 一个插件一个目录，纯 JS、无构建、无运行时依赖，直接以本地目录装进 dsh 的 profile。
+另有一个让会话当调度用的 skill（见下），它不是插件，装法完全不同。
 
 | 插件 | 一句话 | 目录 |
 |---|---|---|
@@ -18,13 +19,18 @@
 
 ## 怎么装
 
-每个子目录本身就是一个 dsh bundle（`package.json` 里有 `dsh.bundle.patch`）。clone 本仓后，
-把子目录的**绝对路径**交给 dsh 里的 AI：
+**插件**：`plugins/` 下每个子目录本身就是一个 dsh bundle（`package.json` 里有 `dsh.bundle.patch`）。
+clone 本仓后，把子目录的**绝对路径**交给 dsh 里的 AI：
 
 > 帮我装一下 `E:\path\to\dsh-plugins\plugins\dsh-offwork-countdown` 这个插件
 
 它背后执行的是 `plugin_manager` 的 `install_bundle`（目标填那个绝对路径），装完在
 **设置 → 插件** 里能看到，插件页里就是它的配置。
+
+**skill**：`skills/` 下的目录不是 bundle，装不了也不用装——把它软链到 `~/.dsh/skills/<名字>`
+即可，dsh 下一轮就会把它列进技能清单。用 magpie 管技能的话，还要在 `library.json` 的
+`skills` 里登记一条 `{ "name": "<名字>", "agents": ["dsh"] }`，让库视图也认得它。
+具体四条步骤见 [AGENTS.md](./AGENTS.md) 的「加一个 skill」一节。
 
 ## 目录约定
 
